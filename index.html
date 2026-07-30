@@ -669,8 +669,7 @@ const db={
     if(this.isFirebase()){
       const sec=fb.appMod.initializeApp(fb.config,"sec-"+Date.now()); const sa=fb.authMod.getAuth(sec);
       try{ const c=await fb.authMod.createUserWithEmailAndPassword(sa,email,password);
-        const sdb=fb.fsMod.getFirestore(sec);
-        await fb.fsMod.setDoc(fb.fsMod.doc(sdb,"users",c.user.uid),{email,displayName,role,site:site||"",lob:lob||"",status:status||"active",createdAt:fb.fsMod.serverTimestamp()});
+        await fb.fsMod.setDoc(fb.fsMod.doc(fb.dbf,"users",c.user.uid),{email,displayName,role,site:site||"",lob:lob||"",status:status||"active",createdAt:fb.fsMod.serverTimestamp()});
         await fb.authMod.signOut(sa); return {id:c.user.uid,email,displayName,role,site,lob,status:status||"active"};
       } finally{ await fb.appMod.deleteApp(sec); }
     }
@@ -688,7 +687,7 @@ const db={
   async sendMessage(cid,to,text){ const msg={conversationId:cid,fromId:state.user.id,fromName:state.user.displayName,toId:to.id,toName:to.displayName||"",text,at:now()}; if(this.isFirebase()){ await fb.fsMod.addDoc(fb.fsMod.collection(fb.dbf,"messages"),msg); } else { const a=readLS("crm_dm_"+cid,[]); a.push({id:uid(),...msg}); writeLS("crm_dm_"+cid,a); } return msg; },
   async heartbeat(){ if(!state.user)return; if(this.isFirebase()){ try{await fb.fsMod.updateDoc(fb.fsMod.doc(fb.dbf,"users",state.user.id),{lastSeen:Date.now()});}catch(e){} } else { const u=readLS(LS.users,[]); const x=u.find(y=>y.id===state.user.id); if(x){x.lastSeen=Date.now();writeLS(LS.users,u);} } },
   async setOffline(){ if(!state.user)return; if(this.isFirebase()){ try{await fb.fsMod.updateDoc(fb.fsMod.doc(fb.dbf,"users",state.user.id),{lastSeen:0});}catch(e){} } else { const u=readLS(LS.users,[]); const x=u.find(y=>y.id===state.user.id); if(x){x.lastSeen=0;writeLS(LS.users,u);} } },
-  async getSettings(){ if(this.isFirebase()){ try{ const s=await fb.fsMod.getDoc(fb.fsMod.doc(fb.dbf,"settings","config")); return s.exists()?{...DEFAULT_SETTINGS,...s.data()}:{...DEFAULT_SETTINGS}; }catch(e){ console.warn("settings read blocked, using defaults:",e.message); return {...DEFAULT_SETTINGS}; } } return readLS(LS.settings,DEFAULT_SETTINGS); },
+  async getSettings(){ if(this.isFirebase()){const s=await fb.fsMod.getDoc(fb.fsMod.doc(fb.dbf,"settings","config"));return s.exists()?{...DEFAULT_SETTINGS,...s.data()}:{...DEFAULT_SETTINGS};} return readLS(LS.settings,DEFAULT_SETTINGS); },
   async saveSettings(s){ if(this.isFirebase()){await fb.fsMod.setDoc(fb.fsMod.doc(fb.dbf,"settings","config"),s);return;} writeLS(LS.settings,s); },
   async _nextRef(){ if(this.isFirebase()){const ref=fb.fsMod.doc(fb.dbf,"settings","counter");const s=await fb.fsMod.getDoc(ref);const n=((s.exists()?s.data().seq:1000)||1000)+1;await fb.fsMod.setDoc(ref,{seq:n});return "TKT-"+n;} let n=readLS(LS.seq,1000)+1;writeLS(LS.seq,n);return "TKT-"+n; },
   async createTicket(t){
@@ -1469,10 +1468,10 @@ async function viewAccounts(root){
     <div class="field"><label>LOB / Account</label><input id="l" placeholder="OnTrac"/></div>
     <button class="btn primary" id="go">Create account</button></div>`);
   root.appendChild(form);
-  $("#go",form).onclick=async()=>{const n=$("#n",form).value.trim(),e=$("#e",form).value.trim(),r=$("#r",form).value,p=$("#p",form).value,s=$("#s",form).value.trim(),l=$("#l",form).value.trim(),m=$("#m",form);if(!n||!e||p.length<6){m.innerHTML=`<div class="msg err">Name, email, and 6+ char password required.</div>`;return;} if(!emailAllowed(e)){m.innerHTML=`<div class="msg err">Access is limited to @${esc(ALLOWED_EMAIL_DOMAIN)} accounts.</div>`;return;} $("#go",form).disabled=true;try{const acct=await db.createAccount({email:e,password:p,displayName:n,role:"agent",site:s,lob:l,status:"pending"}); if(acct&&acct.id) await db.updateUser(acct.id,{role:r,status:"active"}); m.innerHTML=`<div class="msg ok">Account created for ${esc(n)} (${ROLE_LABEL[r]||r}, active).</div>`;viewAccounts(root);}catch(x){m.innerHTML=`<div class="msg err">${esc(x.message)}</div>`;const b=$("#go",form);if(b)b.disabled=false;}};
+  $("#go",form).onclick=async()=>{const n=$("#n",form).value.trim(),e=$("#e",form).value.trim(),r=$("#r",form).value,p=$("#p",form).value,s=$("#s",form).value.trim(),l=$("#l",form).value.trim(),m=$("#m",form);if(!n||!e||p.length<6){m.innerHTML=`<div class="msg err">Name, email, and 6+ char password required.</div>`;return;}$("#go",form).disabled=true;try{await db.createAccount({email:e,password:p,displayName:n,role:r,site:s,lob:l});m.innerHTML=`<div class="msg ok">Account created for ${esc(n)}.</div>`;viewAccounts(root);}catch(x){m.innerHTML=`<div class="msg err">${esc(x.message)}</div>`;const b=$("#go",form);if(b)b.disabled=false;}};
   $("#seed",root).onclick=async()=>{ if(!confirm("Create demo accounts (TL/OPM/OPD/HR + agent, password wfm2026)?"))return;
     const demo=[["Maria (TL)","tl@wfm.local","tl"],["JM (WFM)","wfm@wfm.local","wfm"],["Edmond (OPM)","opm@wfm.local","opm"],["Richard (OPD)","opd@wfm.local","opd"],["Grace (HR)","hr@wfm.local","hr"],["Sam (Agent)","agent@wfm.local","agent"]];
-    for(const[n,e,r]of demo){try{const a=await db.createAccount({email:e,password:"wfm2026",displayName:n,role:"agent",site:"MNL",lob:"WFM",status:"pending"}); if(a&&a.id) await db.updateUser(a.id,{role:r,status:"active"});}catch(x){}} toast("Demo org created"); viewAccounts(root); };
+    for(const[n,e,r]of demo){try{await db.createAccount({email:e,password:"wfm2026",displayName:n,role:r,site:"MNL",lob:"WFM"});}catch(x){}} toast("Demo org created"); viewAccounts(root); };
   root.appendChild(el(`<div class="section-h"><h2>People (${users.length})</h2><div class="rule"></div></div>`));
   const wrap=el(`<div class="table-wrap"><table><thead><tr><th>Name</th><th>Email</th><th>Site / LOB</th><th>Role</th><th>Status</th><th></th></tr></thead><tbody></tbody></table></div>`);
   const tb=$("tbody",wrap);
