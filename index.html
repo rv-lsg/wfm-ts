@@ -669,7 +669,8 @@ const db={
     if(this.isFirebase()){
       const sec=fb.appMod.initializeApp(fb.config,"sec-"+Date.now()); const sa=fb.authMod.getAuth(sec);
       try{ const c=await fb.authMod.createUserWithEmailAndPassword(sa,email,password);
-        await fb.fsMod.setDoc(fb.fsMod.doc(fb.dbf,"users",c.user.uid),{email,displayName,role,site:site||"",lob:lob||"",status:status||"active",createdAt:fb.fsMod.serverTimestamp()});
+        const sdb=fb.fsMod.getFirestore(sec);
+        await fb.fsMod.setDoc(fb.fsMod.doc(sdb,"users",c.user.uid),{email,displayName,role,site:site||"",lob:lob||"",status:status||"active",createdAt:fb.fsMod.serverTimestamp()});
         await fb.authMod.signOut(sa); return {id:c.user.uid,email,displayName,role,site,lob,status:status||"active"};
       } finally{ await fb.appMod.deleteApp(sec); }
     }
