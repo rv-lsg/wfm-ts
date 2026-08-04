@@ -476,6 +476,9 @@
   [data-theme="light"] .btn.danger{background:#fff;color:var(--red);border-color:rgba(226,55,68,.55)}
   [data-theme="light"] .btn.danger:hover{background:var(--red);color:#fff}
   [data-theme="light"] .modal{background:#fff;color:var(--txt)}
+  [data-theme="light"] .toast{background:#fff;color:var(--txt)}
+  [data-theme="light"] .cmdp{background:#fff}
+  [data-theme="light"] .cmdp input{color:var(--txt)}
 </style>
 </head>
 <body>
@@ -569,6 +572,7 @@ const cloneMatrix=(a)=>a.map(m=>({...m,approvers:[...(m.approvers||[])],perm:{..
 const cats=()=>[...new Set(ACTIVE_MATRIX.map(m=>m.cat))];
 const depts=()=>[...new Set(ACTIVE_MATRIX.map(m=>m.dept))];
 const matrixFor = (cat,type)=> ACTIVE_MATRIX.find(m=>m.cat===cat && m.type===type) || null;
+function pendingRoute(){ return ACTIVE_MATRIX.find(m=>String(m.type||"").trim().toLowerCase()==="-pending-")||null; }
 const typesForCat = (cat)=> ACTIVE_MATRIX.filter(m=>m.cat===cat).map(m=>m.type);
 function syncMatrix(s){ ACTIVE_MATRIX = (s&&Array.isArray(s.matrix)&&s.matrix.length)?cloneMatrix(s.matrix):cloneMatrix(DEFAULT_MATRIX); }
 async function persistMatrix(){ state.settings.matrix=cloneMatrix(ACTIVE_MATRIX); await db.saveSettings(state.settings); }
@@ -887,8 +891,10 @@ async function drainInbox(){
   if(!db.isFirebase()||!state.user) return;
   let snap; try{ snap=await fb.fsMod.getDocs(fb.fsMod.collection(fb.dbf,"inbox")); }catch(e){ return; }
   if(!snap.docs.length) return;
-  const cat=(state.settings.intake&&state.settings.intake.category)||cats()[0];
-  let type=(state.settings.intake&&state.settings.intake.type); const types=typesForCat(cat); if(!type||!types.includes(type)) type=types[0];
+  const pr=pendingRoute();
+  const cat=pr?pr.cat:((state.settings.intake&&state.settings.intake.category)||cats()[0]);
+  let type; const types=typesForCat(cat);
+  if(pr){ type=pr.type; } else { type=(state.settings.intake&&state.settings.intake.type); if(!type||!types.includes(type)) type=types[0]; }
   const prio=(state.settings.intake&&state.settings.intake.priority)||"Medium";
   let n=0;
   for(const d of snap.docs){ const e=d.data()||{};
@@ -1237,7 +1243,7 @@ function viewNewTicket(root){
   };
   const fillTypes=()=>{typeSel.innerHTML=typesForCat(catSel.value).map(t=>`<option>${esc(t)}</option>`).join("");updateRoute();};
   catSel.onchange=fillTypes; typeSel.onchange=updateRoute;
-  fillTypes(); setPrio(priority);
+  fillTypes(); { const pr=pendingRoute(); if(pr){ catSel.value=pr.cat; fillTypes(); typeSel.value=pr.type; updateRoute(); } } setPrio(priority);
   const drop=$("#drop",card),fileInput=$("#file",card),attsEl=$("#atts",card);
   drop.onclick=(e)=>{ if(e.target!==fileInput) fileInput.click(); };
   drop.ondragover=e=>{e.preventDefault();drop.classList.add("over");};
