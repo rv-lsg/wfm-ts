@@ -59,7 +59,7 @@
   .btn{position:relative;border:1px solid var(--line);background:rgba(17,27,46,.55);color:var(--txt);border-radius:9px;
     padding:10px 16px;font-size:13px;font-weight:600;transition:.18s;letter-spacing:.02em;overflow:hidden}
   .btn:hover{border-color:var(--cyan);box-shadow:var(--glow-c);transform:translateY(-1px)}
-  .btn.primary{background:linear-gradient(135deg,var(--accent),#b8232f);border-color:transparent;color:#fff}
+  .btn.primary{background:linear-gradient(135deg,var(--green),#26a56a);border-color:transparent;color:#042313}
   .btn.primary:hover{box-shadow:0 0 22px rgba(226,55,68,.45);filter:brightness(1.06)}
   .btn.green{background:linear-gradient(135deg,var(--green),#26a56a);border-color:transparent;color:#042313}
   .btn.green:hover{box-shadow:0 0 20px rgba(63,206,139,.4)}
@@ -316,7 +316,7 @@
   .profile-btn .pname{display:flex;flex-direction:column;line-height:1.15;text-align:left}
   .profile-btn .pname b{font-size:13px}
   .profile-btn .pname small{font-size:10px;color:var(--muted)}
-  .menu{position:absolute;right:0;top:48px;min-width:236px;background:var(--panel);border:1px solid var(--line);border-radius:12px;box-shadow:0 18px 50px rgba(0,0,0,.5);padding:6px;display:none;z-index:3000;max-height:64vh;overflow:auto}
+  .menu{position:absolute;right:0;top:48px;min-width:236px;background:var(--panel-solid);border:1px solid var(--line);border-radius:12px;box-shadow:0 18px 50px rgba(0,0,0,.5);padding:6px;display:none;z-index:3000;max-height:64vh;overflow:auto}
   .menu.open{display:block}
   .menu-h{font-family:var(--code);font-size:10px;letter-spacing:.08em;color:var(--muted);padding:8px 10px 6px;text-transform:uppercase}
   .menu-item{display:flex;align-items:center;gap:9px;justify-content:space-between;padding:9px 10px;border-radius:8px;cursor:pointer;font-size:13px}
@@ -469,6 +469,13 @@
   [data-theme="light"] .dash-w,[data-theme="light"] .chat-side,[data-theme="light"] .chat-main,[data-theme="light"] .route-card,[data-theme="light"] .update-box,[data-theme="light"] .cmt-file,[data-theme="light"] .intake-pre,[data-theme="light"] .gate-box{background:var(--panel-2)}
   [data-theme="light"] .icon-btn,[data-theme="light"] .profile-btn{background:#fff}
   [data-theme="light"] .seg-btn,[data-theme="light"] .chip-toggle{background:#fff}
+  /* pop-ups & button semantics — theme-correct, consistent colors */
+  [data-theme="light"] .menu{background:#fff}
+  .btn.primary,.btn.green{color:#042313}
+  [data-theme="light"] .btn.primary,[data-theme="light"] .btn.green{background:linear-gradient(135deg,#2fb872,#1f9a5f);color:#fff;border-color:transparent}
+  [data-theme="light"] .btn.danger{background:#fff;color:var(--red);border-color:rgba(226,55,68,.55)}
+  [data-theme="light"] .btn.danger:hover{background:var(--red);color:#fff}
+  [data-theme="light"] .modal{background:#fff;color:var(--txt)}
 </style>
 </head>
 <body>
