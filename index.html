@@ -135,7 +135,7 @@
   .pip.rej{background:var(--red);box-shadow:0 0 8px rgba(226,55,68,.6)}
   @keyframes pulseb{0%,100%{opacity:1}50%{opacity:.4}}
 
-  .overlay{position:fixed;inset:0;background:rgba(3,6,12,.72);backdrop-filter:blur(4px);display:flex;align-items:flex-start;justify-content:center;padding:40px 16px;z-index:60;overflow:auto;animation:fade .2s}
+  .overlay{position:fixed;inset:0;background:rgba(3,6,12,.72);backdrop-filter:blur(4px);display:flex;align-items:flex-start;justify-content:center;padding:88px 16px 48px;z-index:300;overflow:auto;animation:fade .2s}
   @keyframes fade{from{opacity:0}to{opacity:1}}
   .modal{background:rgba(14,22,40,.92);backdrop-filter:blur(18px);border:1px solid var(--line);border-radius:18px;width:100%;max-width:640px;padding:24px;
     box-shadow:0 20px 70px rgba(0,0,0,.6),inset 0 1px 0 rgba(255,255,255,.05);animation:rise .3s}
@@ -463,6 +463,12 @@
   ::-webkit-scrollbar-thumb:hover{background:rgba(78,201,245,.32)}
   ::-webkit-scrollbar-track{background:transparent}
   :focus-visible{outline:2px solid rgba(78,201,245,.5);outline-offset:2px}
+  .table-wrap tbody tr.rowlink{cursor:pointer;transition:background .12s}
+  .table-wrap tbody tr.rowlink:hover{background:var(--inset-bg)}
+  [data-theme="light"] .menu{background:#fff}
+  [data-theme="light"] .dash-w,[data-theme="light"] .chat-side,[data-theme="light"] .chat-main,[data-theme="light"] .route-card,[data-theme="light"] .update-box,[data-theme="light"] .cmt-file,[data-theme="light"] .intake-pre,[data-theme="light"] .gate-box{background:var(--panel-2)}
+  [data-theme="light"] .icon-btn,[data-theme="light"] .profile-btn{background:#fff}
+  [data-theme="light"] .seg-btn,[data-theme="light"] .chip-toggle{background:#fff}
 </style>
 </head>
 <body>
@@ -772,7 +778,7 @@ const initTheme=()=>applyTheme(currentTheme());
 const toggleTheme=()=>{const n=currentTheme()==="dark"?"light":"dark";localStorage.setItem(THEME_KEY,n);applyTheme(n);};
 const themeIcon=()=>currentTheme()==="dark"?"☾":"☀";
 function animateCount(node,to){ if(reduceMotion()){node.textContent=to;return;} const dur=650,st=performance.now(); const step=(t)=>{const p=Math.min(1,(t-st)/dur);node.textContent=Math.round(to*(1-Math.pow(1-p,3)));if(p<1)requestAnimationFrame(step);}; requestAnimationFrame(step); }
-function statusBadge(t){ const m=STATUS[t.status]||{label:t.status,c:"#8FA6C4"}; return `<span class="badge" style="color:${m.c};border-color:${m.c}55;background:${m.c}12">${m.label}</span>`; }
+function statusBadge(t){ const m=STATUS[t.status]||{label:t.status,c:"#8FA6C4"}; let label=m.label,c=m.c; if(t.status==="assigned"&&!t.assigneeId){ label="Unassigned"; c="#8FA6C4"; } return `<span class="badge" style="color:${c};border-color:${c}55;background:${c}12">${label}</span>`; }
 function pri(p){ return `<span class="badge prio-${esc(p)}">${esc(p)}</span>`; }
 
 /* futuristic FX */
@@ -1036,9 +1042,9 @@ async function viewBoard(root){
 
 function ticketTable(rows){
   if(!rows.length) return el(`<div class="table-wrap"><div class="empty">No tickets here yet.</div></div>`);
-  const wrap=el(`<div class="table-wrap"><table><thead><tr><th>Ref</th><th>Subject</th><th>Type</th><th>Dept</th><th>Priority</th><th>Assignee</th><th>Age</th><th>Status</th><th></th></tr></thead><tbody></tbody></table></div>`);
+  const wrap=el(`<div class="table-wrap"><table><thead><tr><th>Ref</th><th>Subject</th><th>Type</th><th>Dept</th><th>Priority</th><th>Assignee</th><th>Age</th><th>Status</th></tr></thead><tbody></tbody></table></div>`);
   const tb=$("tbody",wrap);
-  rows.forEach(t=>{const tr=el(`<tr><td class="mono" style="color:var(--cyan)">${esc(t.ref)}</td><td>${esc(t.subject)}${overdue(t)?' <span class="overdue" style="font-size:11px">⚠</span>':''}</td><td class="muted">${esc(t.type)}</td><td class="muted">${esc(t.department||"—")}</td><td>${pri(t.priority)}</td><td>${t.assigneeName?esc(t.assigneeName):'<span class="muted">—</span>'}</td><td class="muted">${ago(t.createdAt)}</td><td>${statusBadge(t)}</td><td><button class="btn sm ghost">Open</button></td></tr>`);$("button",tr).onclick=()=>openTicket(t.id);tb.appendChild(tr);});
+  rows.forEach(t=>{const tr=el(`<tr><td class="mono" style="color:var(--cyan)">${esc(t.ref)}</td><td>${esc(t.subject)}${overdue(t)?' <span class="overdue" style="font-size:11px">⚠</span>':''}</td><td class="muted">${esc(t.type)}</td><td class="muted">${esc(t.department||"—")}</td><td>${pri(t.priority)}</td><td>${t.assigneeName?esc(t.assigneeName):'<span class="muted">—</span>'}</td><td class="muted">${ago(t.createdAt)}</td><td>${statusBadge(t)}</td></tr>`);tr.classList.add("rowlink");tr.onclick=()=>openTicket(t.id);tb.appendChild(tr);});
   return wrap;
 }
 
@@ -1297,7 +1303,7 @@ async function viewApprovals(root){
 async function openTicket(id){
   const all=await db.listTickets(); const t=all.find(x=>x.id===id); if(!t)return;
   const u=state.user; const mayApprove=canApprove(u,t); const trans=allowedTransitions(u,t);
-  const canReroute=u.role==="admin"; const canAssign=u.role==="admin"||APPROVER_ROLES.includes(u.role);
+  const canReroute=u.role==="admin"; const canAssign=["admin","opm","opd"].includes(u.role);
   const canEdit=(u.role==="admin"||u.id===t.requesterId||APPROVER_ROLES.includes(u.role)||u.id===t.assigneeId)&&!["closed","cancelled"].includes(t.status);
   const root=$("#modal-root");
   const overlay=el(`<div class="overlay"><div class="modal" style="max-width:720px">
@@ -1377,6 +1383,14 @@ async function openTicket(id){
   drawDetail();
   // footer actions
   const foot=$("#foot",overlay);
+  // Assign to me — available to any account
+  {
+    const mine = t.assigneeId===u.id;
+    const atm=el(`<button class="btn">${mine?"✓ Assigned to you":"Assign to me"}</button>`);
+    if(mine) atm.disabled=true;
+    atm.onclick=async()=>{ atm.disabled=true; t.assigneeId=u.id; t.assigneeName=u.displayName; if(t.status==="new"||t.status==="pending_approval"||!t.status){/* leave workflow status as-is */} t.activity=[{at:now(),by:u.id,byName:u.displayName,text:"Assigned to "+u.displayName},...(t.activity||[])]; t.updatedAt=now(); try{ await db.saveTicket(t); toast(`${t.ref} assigned to you`); close(); renderShell(); }catch(e){ toast(e.message); atm.disabled=false; } };
+    foot.appendChild(atm);
+  }
   if(mayApprove){
     const note=el(`<input id="dn" placeholder="Decision note (required to reject)" style="flex:1;min-width:160px"/>`);
     const ap=el(`<button class="btn green">Approve</button>`),rj=el(`<button class="btn danger">Reject</button>`);
