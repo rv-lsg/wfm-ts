@@ -887,6 +887,71 @@ function visibleTickets(all,u){ if(u.role==="agent") return all.filter(t=>t.requ
 /* ============================ DASHBOARD ============================ */
 /* ---- presence ---- */
 function isActive(user){ return !!(user && user.lastSeen && (Date.now()-user.lastSeen < 120000)); }
+/* ===================== EMAIL APPROVALS (outbox → email → decisions) ===================== */
+function randToken(){ return (Math.random().toString(36).slice(2)+Date.now().toString(36)+Math.random().toString(36).slice(2)).slice(0,32); }
+function splitEmails(s){ return String(s||"").split(/[,;\n]+/).map(x=>x.trim().toLowerCase().replace(/^.*<|>.*$/g,"")).filter(x=>x.includes("@")); }
+
+// Queue one approval email per active account holder whose role is a pending approver.
+async function queueApprovalEmails(t){
+  if(!db.isFirebase()||!t||t.status!=="pending_approval") return;
+  let users; try{ users = (state.users&&state.users.length)?state.users:await db.listUsers(); }catch(e){ return; }
+  t.emailedRoles = t.emailedRoles||[];
+  let changed=false;
+  for(const a of (t.approvals||[])){
+    if(a.decision!=="" ) continue;
+    if(t.emailedRoles.includes(a.role)) continue;
+    const approvers = users.filter(u=>u.role===a.role && u.email && (u.status?u.status==="active":true));
+    for(const ap of approvers){
+      try{
+        await fb.fsMod.addDoc(fb.fsMod.collection(fb.dbf,"outbox"),{
+          token:randToken(), ticketId:t.id, ticketRef:t.ref, ticketSubject:t.subject, ticketType:t.type,
+          ticketPriority:t.priority, ticketDept:t.department||"", requesterName:t.requesterName||"",
+          approverEmail:ap.email, approverName:ap.displayName||"", approverRole:a.role, at:now(), sent:false });
+      }catch(e){}
+    }
+    t.emailedRoles.push(a.role); changed=true;
+  }
+  if(changed){ try{ await db.saveTicket(t); }catch(e){} }
+}
+
+// Delete all pending approval emails for a ticket+role (used-once / stale-button invalidation).
+async function invalidateOutbox(ticketId,role){
+  if(!db.isFirebase()) return;
+  try{ const s=await fb.fsMod.getDocs(fb.fsMod.collection(fb.dbf,"outbox"));
+    for(const d of s.docs){ const o=d.data(); if(o.ticketId===ticketId && (!role||o.approverRole===role)) await fb.fsMod.deleteDoc(fb.fsMod.doc(fb.dbf,"outbox",d.id)); }
+  }catch(e){}
+}
+
+// Apply Approve/Reject decisions that arrived by email (written to "decisions" by the flow).
+async function drainDecisions(){
+  if(!db.isFirebase()||!state.user) return;
+  let dec; try{ dec=await fb.fsMod.getDocs(fb.fsMod.collection(fb.dbf,"decisions")); }catch(e){ return; }
+  if(!dec.docs.length) return;
+  let box; try{ box=await fb.fsMod.getDocs(fb.fsMod.collection(fb.dbf,"outbox")); }catch(e){ return; }
+  const byToken={}; box.docs.forEach(d=>{ byToken[d.data().token]={id:d.id,...d.data()}; });
+  let applied=0;
+  for(const dd of dec.docs){
+    const d=dd.data()||{}; const cleanup=async()=>{ try{ await fb.fsMod.deleteDoc(fb.fsMod.doc(fb.dbf,"decisions",dd.id)); }catch(e){} };
+    const ob=byToken[d.token];
+    if(!ob){ await cleanup(); continue; }                       // stale / already-used token
+    let ts; try{ ts=await fb.fsMod.getDoc(fb.fsMod.doc(fb.dbf,"tickets",ob.ticketId)); }catch(e){ await cleanup(); continue; }
+    if(!ts.exists()){ await invalidateOutbox(ob.ticketId,ob.approverRole); await cleanup(); continue; }
+    const t={id:ob.ticketId,...ts.data()};
+    const stillPending = t.status==="pending_approval" && (t.approvals||[]).some(a=>a.role===ob.approverRole && a.decision==="");
+    if(stillPending){
+      const pseudo={ role:ob.approverRole, id:"email:"+(ob.approverEmail||""), displayName:(ob.approverName||"Email approver") };
+      const decision = d.decision==="approved"?"approved":"rejected";
+      const note = (decision==="rejected") ? (String(d.note||"").trim()||"(no reason provided)") : String(d.note||"").trim();
+      const nx=applyApproval(t,pseudo,decision,note);
+      nx.activity=[{at:now(),by:pseudo.id,byName:pseudo.displayName,text:(decision==="approved"?`Approved via email (${ROLE_LABEL[ob.approverRole]||ob.approverRole})`:`Rejected via email (${ROLE_LABEL[ob.approverRole]||ob.approverRole})`)+(note&&decision==="rejected"?": "+note:"")}, ...(t.activity||[])];
+      try{ await db.saveTicket(nx); applied++; }catch(e){}
+    }
+    await invalidateOutbox(ob.ticketId,ob.approverRole);        // consume token(s) for this role
+    await cleanup();
+  }
+  if(applied){ toast(applied+" email decision(s) applied"); if(["approvals","tickets","board","dashboard"].includes(state.tab)) renderShell(); }
+}
+
 async function drainInbox(){
   if(!db.isFirebase()||!state.user) return;
   let snap; try{ snap=await fb.fsMod.getDocs(fb.fsMod.collection(fb.dbf,"inbox")); }catch(e){ return; }
@@ -899,17 +964,25 @@ async function drainInbox(){
   let n=0;
   for(const d of snap.docs){ const e=d.data()||{};
     try{
-      await db.createTicket({ subject:(e.subject||"Email request").toString().slice(0,120),
+      const nt=await db.createTicket({ subject:(e.subject||"Email request").toString().slice(0,120),
         description:((e.body||"").toString())+(e.from?("\n\n— From: "+e.from):""),
         category:cat, type:type, priority:prio, labels:["email"],
         requesterId:"email-intake", requesterName:(e.from||"Email intake").toString(), requesterEmail:(e.from||"").toString(),
         site:"", lob:"", attachments:[] });
+      // CC handling: store CC list; any CC that matches an active approver account is added as an approver
+      const ccList=splitEmails(e.cc); nt.cc=ccList;
+      let users=[]; try{ users=(state.users&&state.users.length)?state.users:await db.listUsers(); }catch(_){}
+      for(const email of ccList){ const acc=users.find(u=>(u.email||"").toLowerCase()===email && APPROVER_ROLES.includes(u.role) && (u.status?u.status==="active":true));
+        if(acc && !(nt.approvals||[]).some(a=>a.role===acc.role)){ nt.approvals=[...(nt.approvals||[]),{role:acc.role,decision:"",by:"",byName:"",at:"",note:""}]; } }
+      if((nt.approvals||[]).some(a=>a.decision==="")) nt.status="pending_approval";
+      await db.saveTicket(nt);
+      await queueApprovalEmails(nt);
       await fb.fsMod.deleteDoc(fb.fsMod.doc(fb.dbf,"inbox",d.id)); n++;
     }catch(err){}
   }
   if(n){ toast(n+" ticket(s) created from email"); if(["tickets","board","dashboard"].includes(state.tab)) renderShell(); }
 }
-function startPresence(){ if(window.__hb) clearInterval(window.__hb); try{db.heartbeat();drainInbox();}catch(e){} window.__hb=setInterval(()=>{try{db.heartbeat();drainInbox();}catch(e){}},45000); }
+function startPresence(){ if(window.__hb) clearInterval(window.__hb); try{db.heartbeat();drainInbox();drainDecisions();}catch(e){} window.__hb=setInterval(()=>{try{db.heartbeat();drainInbox();drainDecisions();}catch(e){}},45000); }
 
 /* ---- tiny SVG charts ---- */
 function donut(pairs){ const total=Math.max(1,pairs.reduce((s,p)=>s+p.value,0)),r=52,c=2*Math.PI*r; let off=0,segs="";
@@ -1265,6 +1338,7 @@ function viewNewTicket(root){
       const attachments=[]; for(const p of pending){ const meta=await db.uploadAttachment(p.file); meta.analysis=p.analysis; attachments.push(meta); }
       const t=await db.createTicket({subject,description,category,type,priority,due:due.value,labels:[...selLabels],requesterId:u.id,requesterName:u.displayName,requesterEmail:u.email,site:u.site,lob:u.lob,attachments});
       notifyWebhook("ticket.created",t);
+      queueApprovalEmails(t);
       toast(`${t.ref} submitted`);
       if(again){ viewNewTicket(root); } else { state.tab="tickets"; renderShell(); }
     }catch(e){ m.innerHTML=`<div class="msg err">${esc(e.message)}</div>`; $("#go",card).disabled=false; $("#go2",card).disabled=false; }
@@ -1407,8 +1481,8 @@ async function openTicket(id){
   if(mayApprove){
     const note=el(`<input id="dn" placeholder="Decision note (required to reject)" style="flex:1;min-width:160px"/>`);
     const ap=el(`<button class="btn green">Approve</button>`),rj=el(`<button class="btn danger">Reject</button>`);
-    ap.onclick=async()=>{const nx=applyApproval({...t,approvals:t.approvals.map(a=>({...a}))},u,"approved",note.value.trim());nx.activity=[{at:now(),by:u.id,byName:u.displayName,text:`Approved (${ROLE_LABEL[u.role]})`},...(t.activity||[])];await db.saveTicket(nx);toast(nx.status==="assigned"?`${t.ref} fully approved → routed to ${nx.department}`:`${t.ref} approval recorded`);close();renderShell();};
-    rj.onclick=async()=>{if(!note.value.trim()){toast("A reason is required to reject.");return;}const nx=applyApproval({...t,approvals:t.approvals.map(a=>({...a}))},u,"rejected",note.value.trim());nx.activity=[{at:now(),by:u.id,byName:u.displayName,text:"Rejected"},...(t.activity||[])];await db.saveTicket(nx);toast(`${t.ref} rejected`);close();renderShell();};
+    ap.onclick=async()=>{const nx=applyApproval({...t,approvals:t.approvals.map(a=>({...a}))},u,"approved",note.value.trim());nx.activity=[{at:now(),by:u.id,byName:u.displayName,text:`Approved (${ROLE_LABEL[u.role]})`},...(t.activity||[])];await db.saveTicket(nx);await invalidateOutbox(t.id,u.role);toast(nx.status==="assigned"?`${t.ref} fully approved → routed to ${nx.department}`:`${t.ref} approval recorded`);close();renderShell();};
+    rj.onclick=async()=>{if(!note.value.trim()){toast("A reason is required to reject.");return;}const nx=applyApproval({...t,approvals:t.approvals.map(a=>({...a}))},u,"rejected",note.value.trim());nx.activity=[{at:now(),by:u.id,byName:u.displayName,text:"Rejected"},...(t.activity||[])];await db.saveTicket(nx);await invalidateOutbox(t.id,u.role);toast(`${t.ref} rejected`);close();renderShell();};
     foot.appendChild(note);foot.appendChild(rj);foot.appendChild(ap);
   }
   if(canAssign){ const asg=el(`<button class="btn ghost">Assign</button>`); asg.onclick=()=>assignModal(t,close); foot.appendChild(asg); }
