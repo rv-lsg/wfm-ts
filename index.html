@@ -479,6 +479,8 @@
   [data-theme="light"] .toast{background:#fff;color:var(--txt)}
   [data-theme="light"] .cmdp{background:#fff}
   [data-theme="light"] .cmdp input{color:var(--txt)}
+  [data-theme="light"] .auth-tabs button{background:#fff;color:var(--muted);border-color:var(--line)}
+  [data-theme="light"] .auth-tabs button.active{background:#fff;color:var(--txt);border-color:var(--accent)}
 </style>
 </head>
 <body>
@@ -582,7 +584,7 @@ const DEFAULT_SETTINGS = {
   priorities:["Low","Medium","High","Urgent"],
   labels:["urgent","client-impact","payroll-lock","compliance","after-hours"],
   departments:[...new Set(DEFAULT_MATRIX.map(m=>m.dept))],
-  sla:{Low:72,Medium:48,High:24,Urgent:8}, defaultTheme:"dark", webhookUrl:"", intake:{category:"",type:"",priority:"Medium"}
+  sla:{Low:72,Medium:48,High:24,Urgent:8}, defaultTheme:"dark", webhookUrl:"", approvalSendUrl:"", approvalDecisionUrl:"", intake:{category:"",type:"",priority:"Medium"}
 };
 
 /* ============================ ROUTING / APPROVAL ENGINE (pure) ============================ */
@@ -892,6 +894,28 @@ function randToken(){ return (Math.random().toString(36).slice(2)+Date.now().toS
 function splitEmails(s){ return String(s||"").split(/[,;\n]+/).map(x=>x.trim().toLowerCase().replace(/^.*<|>.*$/g,"")).filter(x=>x.includes("@")); }
 
 // Queue one approval email per active account holder whose role is a pending approver.
+function approvalEmailHtml(o, decisionUrl){
+  const sep=decisionUrl.includes("?")?"&":"?";
+  const A=`${decisionUrl}${sep}token=${encodeURIComponent(o.token)}&decision=approved`;
+  const R=`${decisionUrl}${sep}token=${encodeURIComponent(o.token)}&decision=reject`;
+  return `<div style="font-family:Segoe UI,Arial,sans-serif;max-width:560px;color:#111">
+    <h2 style="margin:0 0 6px">Approval needed</h2>
+    <p style="color:#555;margin:0 0 14px">Hi ${o.approverName||"there"}, a ticket routed to you needs a decision.</p>
+    <table style="width:100%;border-collapse:collapse;font-size:14px">
+      <tr><td style="padding:4px 0;color:#888;width:110px">Ref</td><td><b>${o.ticketRef}</b></td></tr>
+      <tr><td style="padding:4px 0;color:#888">Subject</td><td>${o.ticketSubject}</td></tr>
+      <tr><td style="padding:4px 0;color:#888">Type</td><td>${o.ticketType}</td></tr>
+      <tr><td style="padding:4px 0;color:#888">Priority</td><td>${o.ticketPriority}</td></tr>
+      <tr><td style="padding:4px 0;color:#888">Requester</td><td>${o.requesterName||"—"}</td></tr>
+    </table>
+    <div style="margin:20px 0">
+      <a href="${A}" style="background:#2fb872;color:#fff;padding:11px 22px;border-radius:8px;text-decoration:none;font-weight:600">Approve</a>
+      &nbsp;&nbsp;
+      <a href="${R}" style="background:#e23744;color:#fff;padding:11px 22px;border-radius:8px;text-decoration:none;font-weight:600">Reject</a>
+    </div>
+    <p style="color:#999;font-size:12px">This link works once. If it has already been actioned, it will have no effect.</p>
+  </div>`;
+}
 async function queueApprovalEmails(t){
   if(!db.isFirebase()||!t||t.status!=="pending_approval") return;
   let users; try{ users = (state.users&&state.users.length)?state.users:await db.listUsers(); }catch(e){ return; }
@@ -901,13 +925,13 @@ async function queueApprovalEmails(t){
     if(a.decision!=="" ) continue;
     if(t.emailedRoles.includes(a.role)) continue;
     const approvers = users.filter(u=>u.role===a.role && u.email && (u.status?u.status==="active":true));
+    const sendUrl=(state.settings&&state.settings.approvalSendUrl)||"", decUrl=(state.settings&&state.settings.approvalDecisionUrl)||"";
     for(const ap of approvers){
-      try{
-        await fb.fsMod.addDoc(fb.fsMod.collection(fb.dbf,"outbox"),{
-          token:randToken(), ticketId:t.id, ticketRef:t.ref, ticketSubject:t.subject, ticketType:t.type,
-          ticketPriority:t.priority, ticketDept:t.department||"", requesterName:t.requesterName||"",
-          approverEmail:ap.email, approverName:ap.displayName||"", approverRole:a.role, at:now(), sent:false });
-      }catch(e){}
+      const payload={ token:randToken(), ticketId:t.id, ticketRef:t.ref, ticketSubject:t.subject, ticketType:t.type,
+        ticketPriority:t.priority, ticketDept:t.department||"", requesterName:t.requesterName||"",
+        approverEmail:ap.email, approverName:ap.displayName||"", approverRole:a.role, at:now(), sent:true };
+      try{ await fb.fsMod.addDoc(fb.fsMod.collection(fb.dbf,"outbox"),payload); }catch(e){}
+      if(sendUrl && decUrl){ try{ fetch(sendUrl,{method:"POST",mode:"no-cors",headers:{"Content-Type":"text/plain;charset=utf-8"},body:JSON.stringify({to:payload.approverEmail,subject:`Approval needed — ${payload.ticketRef}: ${payload.ticketSubject}`,html:approvalEmailHtml(payload,decUrl)})}).catch(()=>{}); }catch(e){} }
     }
     t.emailedRoles.push(a.role); changed=true;
   }
@@ -1731,6 +1755,13 @@ async function viewSettings(root){
     ic.onchange=()=>{s.intake.category=ic.value;s.intake.type="";fillT();s.intake.type=it.value;};
     it.onchange=()=>s.intake.type=it.value; ip.onchange=()=>s.intake.priority=ip.value;
     $("#cknow",box).onclick=async()=>{ $("#cknow",box).disabled=true; await drainInbox(); toast("Inbox checked"); $("#cknow",box).disabled=false; };
+    const ac=el(`<div class="card" style="max-width:730px;margin-top:14px"><div class="code muted" style="margin-bottom:8px">EMAIL APPROVALS · APP → OUTLOOK</div>
+      <div class="muted" style="font-size:12px;margin-bottom:14px">When a ticket needs approval, the app emails each approver directly with <b>Approve / Reject</b> buttons — no polling. Paste your two flow URLs (see the guide).</div>
+      <div class="field"><label>Send-email flow URL (HTTP POST)</label><input id="asend" placeholder="https://…/triggers/manual/paths/invoke?…" value="${esc(s.approvalSendUrl||"")}"/></div>
+      <div class="field"><label>Decision flow URL (Approve/Reject links point here)</label><input id="adec" placeholder="https://…/triggers/manual/paths/invoke?…" value="${esc(s.approvalDecisionUrl||"")}"/></div></div>`);
+    r.appendChild(ac);
+    $("#asend",ac).oninput=e=>s.approvalSendUrl=e.target.value.trim();
+    $("#adec",ac).oninput=e=>s.approvalDecisionUrl=e.target.value.trim();
   }
   const secs={branding:secBranding,workflow:secWorkflow,flow:secFlow,sla:secSLA,assistant:secAssistant,data:secData,integrations:secIntegrations};
   const draw=()=>{ $$("[data-s]",head).forEach(b=>b.classList.toggle("active",b.dataset.s===tab)); body.innerHTML=""; secs[tab](body); };
