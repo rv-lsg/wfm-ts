@@ -1002,7 +1002,7 @@ async function drainInbox(){
       await db.saveTicket(nt);
       await queueApprovalEmails(nt);
       await fb.fsMod.deleteDoc(fb.fsMod.doc(fb.dbf,"inbox",d.id)); n++;
-    }catch(err){}
+    }catch(err){ console.error("Email intake drain failed:",err); toast("Email intake blocked: "+(err&&err.message?err.message:"permission")); }
   }
   if(n){ toast(n+" ticket(s) created from email"); if(["tickets","board","dashboard"].includes(state.tab)) renderShell(); }
 }
