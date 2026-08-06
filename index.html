@@ -509,7 +509,7 @@ const MS_TENANT = "";
 /* Set to true ONLY after you have registered the app in Entra/Azure and enabled the Microsoft provider in Firebase. Leave false to hide the button and use email/password sign-in. */
 const ENABLE_MS_LOGIN = false;
 /* Only accounts on this email domain may sign up / sign in. Leave "" to allow any domain. */
-const ALLOWED_EMAIL_DOMAIN = "leangroup.com";
+const ALLOWED_EMAIL_DOMAIN = "";  // "" = any email allowed (set back to "leangroup.com" for production)
 function emailAllowed(e){ return !ALLOWED_EMAIL_DOMAIN || (e||"").toLowerCase().trim().endsWith("@"+ALLOWED_EMAIL_DOMAIN); }
 const SEED_ADMIN = { email:"admin@wfm.local", password:"wfm2026", displayName:"WFM Admin", role:"admin", site:"MNL", lob:"WFM" };
 const AI_KEY = "crm_ai_cfg";
