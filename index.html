@@ -916,14 +916,14 @@ function approvalEmailHtml(o, decisionUrl){
     <p style="color:#999;font-size:12px">This link works once. If it has already been actioned, it will have no effect.</p>
   </div>`;
 }
-async function queueApprovalEmails(t){
+async function queueApprovalEmails(t,force){
   if(!db.isFirebase()||!t||t.status!=="pending_approval") return;
   let users; try{ users = (state.users&&state.users.length)?state.users:await db.listUsers(); }catch(e){ return; }
   t.emailedRoles = t.emailedRoles||[];
   let changed=false;
   for(const a of (t.approvals||[])){
     if(a.decision!=="" ) continue;
-    if(t.emailedRoles.includes(a.role)) continue;
+    if(!force && t.emailedRoles.includes(a.role)) continue;
     const approvers = users.filter(u=>u.role===a.role && u.email && (u.status?u.status==="active":true));
     const sendUrl=(state.settings&&state.settings.approvalSendUrl)||"", decUrl=(state.settings&&state.settings.approvalDecisionUrl)||"";
     for(const ap of approvers){
@@ -1494,6 +1494,14 @@ async function openTicket(id){
   drawDetail();
   // footer actions
   const foot=$("#foot",overlay);
+  // Email approvers — (re)send the approval email for a pending ticket
+  if(t.status==="pending_approval" && (u.role==="admin" || APPROVER_ROLES.includes(u.role))){
+    const eb=el(`<button class="btn">✉ Email approvers</button>`);
+    eb.onclick=async()=>{ const su=(state.settings&&state.settings.approvalSendUrl)||"", du=(state.settings&&state.settings.approvalDecisionUrl)||"";
+      if(!su||!du){ toast("Set both approval flow URLs in Settings → Integrations, then click Save settings."); return; }
+      eb.disabled=true; try{ await queueApprovalEmails(t,true); toast("Approval email(s) sent"); }catch(e){ toast(e.message); } eb.disabled=false; };
+    foot.appendChild(eb);
+  }
   // Assign to me — available to any account
   {
     const mine = t.assigneeId===u.id;
