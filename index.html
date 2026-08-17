@@ -481,6 +481,7 @@
   [data-theme="light"] .cmdp input{color:var(--txt)}
   [data-theme="light"] .auth-tabs button{background:#fff;color:var(--muted);border-color:var(--line)}
   [data-theme="light"] .auth-tabs button.active{background:#fff;color:var(--txt);border-color:var(--accent)}
+  .via-mail{font-size:10px;color:var(--cyan);border:1px solid color-mix(in srgb,var(--cyan) 45%,transparent);padding:1px 7px;border-radius:20px;margin:0 6px;vertical-align:middle}
 </style>
 </head>
 <body>
@@ -584,7 +585,7 @@ const DEFAULT_SETTINGS = {
   priorities:["Low","Medium","High","Urgent"],
   labels:["urgent","client-impact","payroll-lock","compliance","after-hours"],
   departments:[...new Set(DEFAULT_MATRIX.map(m=>m.dept))],
-  sla:{Low:72,Medium:48,High:24,Urgent:8}, defaultTheme:"dark", webhookUrl:"", approvalSendUrl:"", approvalDecisionUrl:"", intake:{category:"",type:"",priority:"Medium"}
+  sla:{Low:72,Medium:48,High:24,Urgent:8}, defaultTheme:"dark", webhookUrl:"", approvalSendUrl:"", approvalDecisionUrl:"", replyFlowUrl:"", intake:{category:"",type:"",priority:"Medium"}
 };
 
 /* ============================ ROUTING / APPROVAL ENGINE (pure) ============================ */
@@ -985,26 +986,41 @@ async function drainInbox(){
   let type; const types=typesForCat(cat);
   if(pr){ type=pr.type; } else { type=(state.settings.intake&&state.settings.intake.type); if(!type||!types.includes(type)) type=types[0]; }
   const prio=(state.settings.intake&&state.settings.intake.priority)||"Medium";
-  let n=0;
+  let n=0, rn=0;
+  let allT=[]; try{ allT=(await db.listTickets())||[]; }catch(_){}
   for(const d of snap.docs){ const e=d.data()||{};
-    // LOOP PREVENTION: don't ticket the system's own emails, replies, or auto-replies
-    const subj=(e.subject||"").toString(); const body=(e.body||"").toString(); const from=(e.from||"").toString().toLowerCase();
-    const isReply=/^\s*(re|fwd|fw|aw|antwort|automatic reply|auto-reply|out of office|undeliverable|delivery|read:)\s*:/i.test(subj);
+    const subj=(e.subject||"").toString(); const body=(e.body||"").toString(); const from=(e.from||"").toString();
+    const conv=(e.conversationId||"").toString(); const mid=(e.messageId||"").toString();
+    const isAuto=/^\s*(automatic reply|auto-reply|out of office|undeliverable|delivery|read:)\s*:/i.test(subj);
     const isOwnMail=/^\s*approval needed/i.test(subj) || /this link works once|if it has already been actioned|reason recorded|you can close this tab/i.test(body);
-    if(isReply || isOwnMail){
-      try{ await fb.fsMod.deleteDoc(fb.fsMod.doc(fb.dbf,"inbox",d.id)); }catch(_){}
+    const isReply=/^\s*(re|fwd|fw|aw|antwort)\s*:/i.test(subj);
+    // auto-replies and the system's own mail -> discard
+    if(isAuto || isOwnMail){ try{ await fb.fsMod.deleteDoc(fb.fsMod.doc(fb.dbf,"inbox",d.id)); }catch(_){}; continue; }
+    // inbound reply matched to an existing ticket (same conversation) -> post as a comment
+    const match = conv ? allT.find(x=>x.conversationId && x.conversationId===conv) : null;
+    if(match){
+      try{
+        match.comments = match.comments||[];
+        match.comments.push({id:uid(), by:"email", byName:(from||"Email"), text:(body||"(no content)"), at:now(), via:"email"});
+        match.activity = [{at:now(), by:"email", byName:(from||"Email"), text:"Reply received via email"}, ...(match.activity||[])];
+        match.updatedAt=now();
+        await db.saveTicket(match);
+        await fb.fsMod.deleteDoc(fb.fsMod.doc(fb.dbf,"inbox",d.id)); rn++;
+      }catch(err){ console.error("Reply attach failed:",err); }
       continue;
     }
+    // reply with no matching ticket -> discard (don't spawn a stray ticket)
+    if(isReply){ try{ await fb.fsMod.deleteDoc(fb.fsMod.doc(fb.dbf,"inbox",d.id)); }catch(_){}; continue; }
+    // brand-new request -> create a ticket
     try{
       const nt=await db.createTicket({ subject:(e.subject||"Email request").toString().slice(0,120),
         description:((e.body||"").toString())+(e.from?("\n\n— From: "+e.from):""),
         category:cat, type:type, priority:prio, labels:["email"],
         requesterId:"email-intake", requesterName:(e.from||"Email intake").toString(), requesterEmail:(e.from||"").toString(),
         site:"", lob:"", attachments:[] });
-      // CC handling: store CC list; any CC that matches an active approver account is added as an approver
-      const ccList=splitEmails(e.cc); nt.cc=ccList;
+      nt.cc=splitEmails(e.cc); nt.emailMessageId=mid; nt.conversationId=conv;
       let users=[]; try{ users=(state.users&&state.users.length)?state.users:await db.listUsers(); }catch(_){}
-      for(const email of ccList){ const acc=users.find(u=>(u.email||"").toLowerCase()===email && APPROVER_ROLES.includes(u.role) && (u.status?u.status==="active":true));
+      for(const email of nt.cc){ const acc=users.find(u=>(u.email||"").toLowerCase()===email && APPROVER_ROLES.includes(u.role) && (u.status?u.status==="active":true));
         if(acc && !(nt.approvals||[]).some(a=>a.role===acc.role)){ nt.approvals=[...(nt.approvals||[]),{role:acc.role,decision:"",by:"",byName:"",at:"",note:""}]; } }
       if((nt.approvals||[]).some(a=>a.decision==="")) nt.status="pending_approval";
       await db.saveTicket(nt);
@@ -1012,7 +1028,7 @@ async function drainInbox(){
       await fb.fsMod.deleteDoc(fb.fsMod.doc(fb.dbf,"inbox",d.id)); n++;
     }catch(err){ console.error("Email intake drain failed:",err); toast("Email intake blocked: "+(err&&err.message?err.message:"permission")); }
   }
-  if(n){ toast(n+" ticket(s) created from email"); if(["tickets","board","dashboard"].includes(state.tab)) renderShell(); }
+  if(n||rn){ let msg=[]; if(n)msg.push(n+" ticket(s) created"); if(rn)msg.push(rn+" reply(ies) posted"); toast(msg.join(" · ")+" from email"); if(["tickets","board","dashboard","approvals"].includes(state.tab)) renderShell(); }
 }
 function startPresence(){ if(window.__hb) clearInterval(window.__hb); try{db.heartbeat();drainInbox();drainDecisions();}catch(e){} window.__hb=setInterval(()=>{try{db.heartbeat();drainInbox();drainDecisions();}catch(e){}},45000); }
 
@@ -1451,7 +1467,7 @@ async function openTicket(id){
     tabc.appendChild(el(`<div class="code muted" style="margin:14px 0 8px">Updates & comments (${(t.comments||[]).length})</div>`));
     const clist=el(`<div></div>`);
     (t.comments||[]).forEach(c=>{
-      const wrap=el(`<div class="cmt"><span class="avatar">${initials(c.byName)}</span><div class="body"><div class="top"><b>${esc(c.byName)}</b><span>${fmtDate(c.at)}</span></div>${c.text?esc(c.text):'<span class="muted">(no note)</span>'}</div></div>`);
+      const wrap=el(`<div class="cmt"><span class="avatar">${initials(c.byName)}</span><div class="body"><div class="top"><b>${esc(c.byName)}</b>${c.via==="email"?' <span class="via-mail">✉ via email</span>':''}<span>${fmtDate(c.at)}</span></div>${c.text?esc(c.text):'<span class="muted">(no note)</span>'}</div></div>`);
       if(c.attachment){ const a=c.attachment; const chip=el(`<div class="cmt-file"><span class="ext-sm">${esc((a.name.split(".").pop()||"?").toUpperCase().slice(0,4))}</span><span class="fn">${esc(a.name)}</span><small class="muted">${fmtSize(a.size)}</small><button class="btn sm">Open</button></div>`);
         $("button",chip).onclick=async()=>{try{const url=await db.attachmentURL(a);if(url)window.open(url,"_blank");else toast("File unavailable on this device.");}catch(e){toast("Could not open file.");}};
         $(".body",wrap).appendChild(chip); }
@@ -1460,7 +1476,7 @@ async function openTicket(id){
     tabc.appendChild(clist);
     let cfile=null;
     const cbox=el(`<div class="update-box"><textarea id="cin" placeholder="Post a process update or response — e.g. 'Completed, requested data attached'"></textarea>
-      <div class="update-actions"><button class="btn sm ghost" id="cfile">📎 Attach file</button><span class="muted" id="cfname" style="font-size:11px;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap"></span><button class="btn primary" id="cadd">Post update</button></div>
+      <div class="update-actions"><button class="btn sm ghost" id="cfile">📎 Attach file</button><span class="muted" id="cfname" style="font-size:11px;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap"></span><button class="btn primary" id="cadd">Post update</button><button class="btn" id="cmail" title="Post this update and email it to the requester (in-thread)">✉ Email sender</button></div>
       <input type="file" id="cfi" style="display:none"/></div>`);
     $("#cfile",cbox).onclick=()=>$("#cfi",cbox).click();
     $("#cfi",cbox).onchange=()=>{ const f=$("#cfi",cbox).files[0]; if(f&&f.size>25*1024*1024){toast(f.name+" exceeds 25MB");$("#cfi",cbox).value="";return;} cfile=f||null; $("#cfname",cbox).textContent=cfile?("📎 "+cfile.name):""; };
@@ -1475,6 +1491,24 @@ async function openTicket(id){
         const fbn=overlay.querySelector('[data-t="files"]'); if(fbn) fbn.textContent="Files ("+(t.attachments||[]).length+")";
         drawDetail();
       }catch(e){ toast(e.message); $("#cadd",cbox).disabled=false; }
+    };
+    $("#cmail",cbox).onclick=async()=>{ const v=$("#cin",cbox).value.trim(); if(!v&&!cfile){toast("Add a note or a file.");return;}
+      const ru=(state.settings&&state.settings.replyFlowUrl)||"";
+      if(!ru){ toast("Set the Reply-in-thread flow URL in Settings → Integrations, then Save settings."); return; }
+      if(!t.requesterEmail){ toast("This ticket has no requester email to reply to."); return; }
+      $("#cmail",cbox).disabled=true;
+      try{
+        let att=null;
+        if(cfile){ const analysis=await analyzeFile(cfile); att=await db.uploadAttachment(cfile); att.analysis=analysis; t.attachments=t.attachments||[]; t.attachments.push(att); }
+        t.comments=t.comments||[]; t.comments.push({id:uid(),by:u.id,byName:u.displayName,text:v,at:now(),attachment:att,emailed:true});
+        t.activity.unshift({at:now(),by:u.id,byName:u.displayName,text:"Emailed the requester"+(att?" with a file":"")});
+        t.updatedAt=now(); await db.saveTicket(t);
+        try{ fetch(ru,{method:"POST",mode:"no-cors",headers:{"Content-Type":"text/plain;charset=utf-8"},body:JSON.stringify({messageId:t.emailMessageId||"",conversationId:t.conversationId||"",to:t.requesterEmail,subject:"Re: ["+t.ref+"] "+(t.subject||""),body:v})}).catch(()=>{}); }catch(_){}
+        toast("Update posted & emailed to requester");
+        const fbn=overlay.querySelector('[data-t="files"]'); if(fbn) fbn.textContent="Files ("+(t.attachments||[]).length+")";
+        $("#cin",cbox).value=""; cfile=null; $("#cfname",cbox).textContent="";
+        drawDetail();
+      }catch(e){ toast(e.message); $("#cmail",cbox).disabled=false; }
     };
     tabc.appendChild(cbox);
   }
@@ -1774,10 +1808,12 @@ async function viewSettings(root){
     const ac=el(`<div class="card" style="max-width:730px;margin-top:14px"><div class="code muted" style="margin-bottom:8px">EMAIL APPROVALS · APP → OUTLOOK</div>
       <div class="muted" style="font-size:12px;margin-bottom:14px">When a ticket needs approval, the app emails each approver directly with <b>Approve / Reject</b> buttons — no polling. Paste your two flow URLs (see the guide).</div>
       <div class="field"><label>Send-email flow URL (HTTP POST)</label><input id="asend" placeholder="https://…/triggers/manual/paths/invoke?…" value="${esc(s.approvalSendUrl||"")}"/></div>
-      <div class="field"><label>Decision flow URL (Approve/Reject links point here)</label><input id="adec" placeholder="https://…/triggers/manual/paths/invoke?…" value="${esc(s.approvalDecisionUrl||"")}"/></div></div>`);
+      <div class="field"><label>Decision flow URL (Approve/Reject links point here)</label><input id="adec" placeholder="https://…/triggers/manual/paths/invoke?…" value="${esc(s.approvalDecisionUrl||"")}"/></div>
+      <div class="field"><label>Reply-in-thread flow URL (Updates → email the requester)</label><input id="areply" placeholder="https://…/triggers/manual/paths/invoke?…" value="${esc(s.replyFlowUrl||"")}"/></div></div>`);
     r.appendChild(ac);
     $("#asend",ac).oninput=e=>s.approvalSendUrl=e.target.value.trim();
     $("#adec",ac).oninput=e=>s.approvalDecisionUrl=e.target.value.trim();
+    $("#areply",ac).oninput=e=>s.replyFlowUrl=e.target.value.trim();
   }
   const secs={branding:secBranding,workflow:secWorkflow,flow:secFlow,sla:secSLA,assistant:secAssistant,data:secData,integrations:secIntegrations};
   const draw=()=>{ $$("[data-s]",head).forEach(b=>b.classList.toggle("active",b.dataset.s===tab)); body.innerHTML=""; secs[tab](body); };
