@@ -1021,7 +1021,7 @@ async function drainInbox(){
     // brand-new request -> create a ticket
     try{
       const nt=await db.createTicket({ subject:(e.subject||"Email request").toString().slice(0,120),
-        description:((e.body||"").toString())+(e.from?("\n\n— From: "+e.from):""),
+        description:(cleanEmailBody(e.body)||"")+(e.from?("\n\n— From: "+e.from):""),
         category:cat, type:type, priority:prio, labels:["email"],
         requesterId:"email-intake", requesterName:(e.from||"Email intake").toString(), requesterEmail:(e.from||"").toString(),
         site:"", lob:"", attachments:[] });
@@ -1467,7 +1467,7 @@ async function openTicket(id){
       <div><div class="code muted">Assignee</div><div>${t.assigneeName?esc(t.assigneeName):'<span class="muted">Unassigned</span>'}</div></div>
       <div><div class="code muted">Raised</div><div>${fmtDate(t.createdAt)}</div></div>
       <div><div class="code muted">Due</div><div class="${overdue(t)?'overdue':''}">${t.due?dueTxt(t)+(overdue(t)?' · overdue':''):'—'}</div></div></div>`));
-    tabc.appendChild(el(`<div class="field"><label>Details</label><div class="card inset">${t.description?esc(t.description):'<span class="muted">No details provided.</span>'}</div></div>`));
+    tabc.appendChild(el(`<div class="field"><label>Details</label><div class="card inset">${t.description?`<div class="cmt-text">${esc(t.description)}</div>`:'<span class="muted">No details provided.</span>'}</div></div>`));
     if(t.labels&&t.labels.length) tabc.appendChild(el(`<div style="margin-bottom:10px">${t.labels.map(l=>`<span class="lbl">${esc(l)}</span>`).join("")}</div>`));
     tabc.appendChild(el(`<div class="analysis"><div class="h">POLICY · ESCALATION & RESOLUTION</div><div><b>Escalation trigger:</b> ${esc(t.escalation||"—")}</div><div style="margin-top:4px"><b>Resolution criteria:</b> ${esc(t.resolution||"—")}</div></div>`));
     // process updates & comments (optional file attachment — e.g. the requested data)
