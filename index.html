@@ -987,6 +987,14 @@ async function drainInbox(){
   const prio=(state.settings.intake&&state.settings.intake.priority)||"Medium";
   let n=0;
   for(const d of snap.docs){ const e=d.data()||{};
+    // LOOP PREVENTION: don't ticket the system's own emails, replies, or auto-replies
+    const subj=(e.subject||"").toString(); const body=(e.body||"").toString(); const from=(e.from||"").toString().toLowerCase();
+    const isReply=/^\s*(re|fwd|fw|aw|antwort|automatic reply|auto-reply|out of office|undeliverable|delivery|read:)\s*:/i.test(subj);
+    const isOwnMail=/^\s*approval needed/i.test(subj) || /this link works once|if it has already been actioned|reason recorded|you can close this tab/i.test(body);
+    if(isReply || isOwnMail){
+      try{ await fb.fsMod.deleteDoc(fb.fsMod.doc(fb.dbf,"inbox",d.id)); }catch(_){}
+      continue;
+    }
     try{
       const nt=await db.createTicket({ subject:(e.subject||"Email request").toString().slice(0,120),
         description:((e.body||"").toString())+(e.from?("\n\n— From: "+e.from):""),
