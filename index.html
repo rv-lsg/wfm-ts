@@ -482,6 +482,7 @@
   [data-theme="light"] .auth-tabs button{background:#fff;color:var(--muted);border-color:var(--line)}
   [data-theme="light"] .auth-tabs button.active{background:#fff;color:var(--txt);border-color:var(--accent)}
   .via-mail{font-size:10px;color:var(--cyan);border:1px solid color-mix(in srgb,var(--cyan) 45%,transparent);padding:1px 7px;border-radius:20px;margin:0 6px;vertical-align:middle}
+  .cmt-text{white-space:pre-wrap;word-break:break-word}
 </style>
 </head>
 <body>
@@ -893,25 +894,10 @@ function isActive(user){ return !!(user && user.lastSeen && (Date.now()-user.las
 /* ===================== EMAIL APPROVALS (outbox → email → decisions) ===================== */
 function randToken(){ return (Math.random().toString(36).slice(2)+Date.now().toString(36)+Math.random().toString(36).slice(2)).slice(0,32); }
 function cleanEmailBody(raw){
-  let t=String(raw||"").replace(/\r/g," ");
-  // remove the standard external-email banner sentence (keeps the real message that follows on the same line)
-  t=t.replace(/\[?\s*EXTERNAL EMAIL\s*\]?\s*DO NOT CLICK[\s\S]*?content is safe\.?/ig,"");
-  // cut at the first signature / quoted-history marker (works inline or multiline)
-  const markers=[
-    /\bIntern\s*[-\u2011]\s*Global Solutions/i,
-    /\bLeanGroup\.com/i,
-    /\bLinkedIn\b/i,
-    /@LeanSolutionsGroup/i,
-    /[A-Z0-9._%+-]+@leangroup\.com/i,
-    /\nOn .+wrote:/i,
-    /\nFrom:\s/i,
-    /\n--\s*\n/,
-    /Sent from my /i
-  ];
-  let idx=t.length;
-  for(const re of markers){ const m=t.search(re); if(m>=0 && m<idx) idx=m; }
-  t=t.slice(0,idx).replace(/[ \t]+/g," ").replace(/\s*\n\s*/g,"\n").replace(/\n{3,}/g,"\n\n").trim();
-  return t||String(raw||"").trim();
+  let t=String(raw||"").replace(/\r/g,"");
+  // strip only the external-email safety banner; keep the rest (message + signature) with its formatting
+  t=t.replace(/\[?\s*EXTERNAL EMAIL\s*\]?\s*DO NOT CLICK[\s\S]*?content is safe\.?\s*/ig,"");
+  return t.replace(/\n{3,}/g,"\n\n").trim() || String(raw||"").trim();
 }
 function splitEmails(s){ return String(s||"").split(/[,;\n]+/).map(x=>x.trim().toLowerCase().replace(/^.*<|>.*$/g,"")).filter(x=>x.includes("@")); }
 
@@ -1488,7 +1474,7 @@ async function openTicket(id){
     tabc.appendChild(el(`<div class="code muted" style="margin:14px 0 8px">Updates & comments (${(t.comments||[]).length})</div>`));
     const clist=el(`<div></div>`);
     (t.comments||[]).forEach(c=>{
-      const wrap=el(`<div class="cmt"><span class="avatar">${initials(c.byName)}</span><div class="body"><div class="top"><b>${esc(c.byName)}</b>${c.via==="email"?' <span class="via-mail">✉ via email</span>':''}<span>${fmtDate(c.at)}</span></div>${c.text?esc(c.text):'<span class="muted">(no note)</span>'}</div></div>`);
+      const wrap=el(`<div class="cmt"><span class="avatar">${initials(c.byName)}</span><div class="body"><div class="top"><b>${esc(c.byName)}</b>${c.via==="email"?' <span class="via-mail">✉ via email</span>':''}<span>${fmtDate(c.at)}</span></div>${c.text?`<div class="cmt-text">${esc(c.text)}</div>`:'<span class="muted">(no note)</span>'}</div></div>`);
       if(c.attachment){ const a=c.attachment; const chip=el(`<div class="cmt-file"><span class="ext-sm">${esc((a.name.split(".").pop()||"?").toUpperCase().slice(0,4))}</span><span class="fn">${esc(a.name)}</span><small class="muted">${fmtSize(a.size)}</small><button class="btn sm">Open</button></div>`);
         $("button",chip).onclick=async()=>{try{const url=await db.attachmentURL(a);if(url)window.open(url,"_blank");else toast("File unavailable on this device.");}catch(e){toast("Could not open file.");}};
         $(".body",wrap).appendChild(chip); }
