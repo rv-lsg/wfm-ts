@@ -1370,7 +1370,8 @@ function viewNewTicket(root){
     routeEl.innerHTML=`<div class="route-card"><div class="route-h">ROUTING PREVIEW</div><div class="route-chain">${steps.join('<span class="rarrow">→</span>')}</div>${m.approvers.length>1?'<div class="route-note">Dual approval — every listed role must approve.</div>':''}${warn?`<div class="perm-warn">⚠ ${esc(warn)}</div>`:""}${blocked?`<div class="perm-warn">⚠ Your role can't raise this type directly per policy — it may need reassignment.</div>`:""}</div>`;
   };
   const fillTypes=()=>{typeSel.innerHTML=typesForCat(catSel.value).map(t=>`<option>${esc(t)}</option>`).join("");updateRoute();};
-  catSel.onchange=fillTypes; typeSel.onchange=updateRoute;
+  const applyTypePrio=()=>{ const m=matrixFor(catSel.value,typeSel.value); if(m&&m.priority) setPrio(m.priority); };
+  catSel.onchange=()=>{ fillTypes(); applyTypePrio(); }; typeSel.onchange=()=>{ updateRoute(); applyTypePrio(); };
   fillTypes(); { const pr=pendingRoute(); if(pr){ catSel.value=pr.cat; fillTypes(); typeSel.value=pr.type; updateRoute(); } } setPrio(priority);
   const drop=$("#drop",card),fileInput=$("#file",card),attsEl=$("#atts",card);
   drop.onclick=(e)=>{ if(e.target!==fileInput) fileInput.click(); };
@@ -1446,7 +1447,8 @@ async function openTicket(id){
   const all=await db.listTickets(); const t=all.find(x=>x.id===id); if(!t)return;
   const u=state.user; const mayApprove=canApprove(u,t); const trans=allowedTransitions(u,t);
   const canReroute=u.role==="admin"; const canAssign=["admin","opm","opd"].includes(u.role);
-  const canEdit=(u.role==="admin"||u.id===t.requesterId||APPROVER_ROLES.includes(u.role)||u.id===t.assigneeId)&&!["closed","cancelled"].includes(t.status);
+  const wfmLocked = (u.role==="wfm" && u.id!==t.assigneeId);  // WFM can only act on tickets assigned to them
+  const canEdit=(u.role==="admin"||u.id===t.requesterId||APPROVER_ROLES.includes(u.role)||u.id===t.assigneeId)&&!["closed","cancelled"].includes(t.status)&&!wfmLocked;
   const root=$("#modal-root");
   const overlay=el(`<div class="overlay"><div class="modal" style="max-width:720px">
     <div style="display:flex;justify-content:space-between;align-items:flex-start"><div><h3>${esc(t.subject)}</h3>
@@ -1483,7 +1485,7 @@ async function openTicket(id){
     tabc.appendChild(clist);
     let cfile=null;
     const cbox=el(`<div class="update-box"><textarea id="cin" placeholder="Post a process update or response — e.g. 'Completed, requested data attached'"></textarea>
-      <div class="update-actions"><button class="btn sm ghost" id="cfile">📎 Attach file</button><span class="muted" id="cfname" style="font-size:11px;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap"></span><button class="btn primary" id="cadd">Post update</button><button class="btn" id="cmail" title="Post this update and email it to the requester (in-thread)">✉ Email sender</button></div>
+      <div class="update-actions"><button class="btn sm ghost" id="cfile">📎 Attach file</button><span class="muted" id="cfname" style="font-size:11px;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap"></span><button class="btn primary" id="cadd" ${wfmLocked?"disabled":""}>Post update</button><button class="btn" id="cmail" ${wfmLocked?"disabled":""} title="Post this update and email it to the requester (in-thread)">✉ Email sender</button></div>${wfmLocked?'<div class="muted" style="font-size:12px;margin-top:6px">Assign this ticket to yourself to post updates or email the requester.</div>':''}
       <input type="file" id="cfi" style="display:none"/></div>`);
     $("#cfile",cbox).onclick=()=>$("#cfi",cbox).click();
     $("#cfi",cbox).onchange=()=>{ const f=$("#cfi",cbox).files[0]; if(f&&f.size>25*1024*1024){toast(f.name+" exceeds 25MB");$("#cfi",cbox).value="";return;} cfile=f||null; $("#cfname",cbox).textContent=cfile?("📎 "+cfile.name):""; };
@@ -1544,7 +1546,7 @@ async function openTicket(id){
   // footer actions
   const foot=$("#foot",overlay);
   // Email approvers — (re)send the approval email for a pending ticket
-  if(t.status==="pending_approval" && (u.role==="admin" || APPROVER_ROLES.includes(u.role))){
+  if(t.status==="pending_approval" && (u.role==="admin" || APPROVER_ROLES.includes(u.role)) && !wfmLocked){
     const eb=el(`<button class="btn">✉ Email approvers</button>`);
     eb.onclick=async()=>{ const su=(state.settings&&state.settings.approvalSendUrl)||"", du=(state.settings&&state.settings.approvalDecisionUrl)||"";
       if(!su||!du){ toast("Set both approval flow URLs in Settings → Integrations, then click Save settings."); return; }
@@ -1568,13 +1570,13 @@ async function openTicket(id){
   }
   if(canAssign){ const asg=el(`<button class="btn ghost">Assign</button>`); asg.onclick=()=>assignModal(t,close); foot.appendChild(asg); }
   if(canReroute){ const rr=el(`<button class="btn ghost">Reroute</button>`); rr.onclick=()=>rerouteModal(t,close); foot.appendChild(rr); }
-  if(trans.length){ const sel=el(`<select style="width:auto"><option value="">Set status…</option>${trans.map(s=>`<option value="${s}">${STATUS[s].label}</option>`).join("")}</select>`);
+  if(trans.length && !wfmLocked){ const sel=el(`<select style="width:auto"><option value="">Set status…</option>${trans.map(s=>`<option value="${s}">${STATUS[s].label}</option>`).join("")}</select>`);
     sel.onchange=async()=>{const ns=sel.value;if(!ns)return;t.status=ns;t.activity.unshift({at:now(),by:u.id,byName:u.displayName,text:"Status → "+STATUS[ns].label});t.updatedAt=now();await db.saveTicket(t);toast(`${t.ref} → ${STATUS[ns].label}`);close();renderShell();}; foot.appendChild(sel); }
   if(canEdit){ const ed=el(`<button class="btn ghost">Edit</button>`); ed.onclick=()=>editTicketModal(t,close); foot.appendChild(ed); }
   const cb=el(`<button class="btn">Close</button>`); cb.onclick=close; foot.appendChild(cb);
 }
 function matrixRowModal(idx,after){
-  const root=$("#modal-root"); const m=idx>=0?ACTIVE_MATRIX[idx]:{cat:"",type:"",dept:"",approvers:[],perm:{opd:"direct",opm:"direct",tl:"direct",hr:"direct",wfm:"direct"},esc:"",res:""};
+  const root=$("#modal-root"); const m=idx>=0?ACTIVE_MATRIX[idx]:{cat:"",type:"",dept:"",approvers:[],perm:{opd:"direct",opm:"direct",tl:"direct",hr:"direct",wfm:"direct"},esc:"",res:"",priority:"Medium"};
   const catList=[...new Set(ACTIVE_MATRIX.map(x=>x.cat))], deptList=[...new Set(ACTIVE_MATRIX.map(x=>x.dept))];
   const permSel=(role)=>`<select id="p_${role}"><option value="direct" ${(m.perm[role]||"direct")==="direct"?"selected":""}>direct</option><option value="cond" ${m.perm[role]==="cond"?"selected":""}>conditional</option><option value="none" ${m.perm[role]==="none"?"selected":""}>none</option></select>`;
   const ov=el(`<div class="overlay"><div class="modal" style="max-width:620px"><div style="display:flex;justify-content:space-between"><h3>${idx>=0?"Edit":"Add"} ticket type</h3><button class="close-x" id="mx">✕</button></div><div id="m"></div>
@@ -1582,6 +1584,7 @@ function matrixRowModal(idx,after){
     <datalist id="dld">${deptList.map(d=>`<option value="${esc(d)}">`).join("")}</datalist>
     <div class="row-2"><div class="field"><label>Category</label><input id="cat" list="dlc" value="${esc(m.cat)}"/></div><div class="field"><label>Ticket type</label><input id="type" value="${esc(m.type)}"/></div></div>
     <div class="field"><label>Addressed by (department)</label><input id="dept" list="dld" value="${esc(m.dept)}"/></div>
+    <div class="field"><label>Default priority (auto-applied when this type is chosen)</label><select id="tprio">${(state.settings.priorities||["Low","Medium","High","Urgent"]).map(p=>`<option ${p===(m.priority||"Medium")?"selected":""}>${esc(p)}</option>`).join("")}</select></div>
     <div class="field"><label>Approver role(s) required</label><div style="display:flex;gap:14px;flex-wrap:wrap">${APPROVER_ROLES.map(r=>`<label style="display:flex;gap:6px;align-items:center;font-size:13px"><input type="checkbox" value="${r}" ${m.approvers.includes(r)?"checked":""} class="apx"/> ${ROLE_LABEL[r]}</label>`).join("")}</div><div class="matrix-note">Tick more than one for dual approval (e.g. Termination = HR Manager + Ops Director). None = routes directly with no approval.</div></div>
     <div class="field"><label>Who may raise this (requester permissions)</label><div class="row-2"><div>Ops Director ${permSel("opd")}</div><div>Ops Manager ${permSel("opm")}</div><div>WFM Analyst ${permSel("wfm")}</div><div>Team Lead ${permSel("tl")}</div><div>HR Manager ${permSel("hr")}</div></div><div class="matrix-note">Requesters/employees and admins can always raise a ticket.</div></div>
     <div class="field"><label>Escalation trigger</label><input id="esc" value="${esc(m.esc||"")}"/></div>
@@ -1592,25 +1595,42 @@ function matrixRowModal(idx,after){
     if(!cat||!type||!dept){$("#m",ov).innerHTML=`<div class="msg err">Category, type, and department are required.</div>`;return;}
     const dup=ACTIVE_MATRIX.findIndex(x=>x.cat===cat&&x.type===type);
     if(dup>=0&&dup!==idx){$("#m",ov).innerHTML=`<div class="msg err">That category + type already exists.</div>`;return;}
-    const row={cat,type,dept,approvers:$$(".apx",ov).filter(c=>c.checked).map(c=>c.value),perm:{opd:$("#p_opd",ov).value,opm:$("#p_opm",ov).value,tl:$("#p_tl",ov).value,hr:$("#p_hr",ov).value,wfm:$("#p_wfm",ov).value},esc:$("#esc",ov).value.trim(),res:$("#res",ov).value.trim()};
+    const row={cat,type,dept,approvers:$$(".apx",ov).filter(c=>c.checked).map(c=>c.value),perm:{opd:$("#p_opd",ov).value,opm:$("#p_opm",ov).value,tl:$("#p_tl",ov).value,hr:$("#p_hr",ov).value,wfm:$("#p_wfm",ov).value},esc:$("#esc",ov).value.trim(),res:$("#res",ov).value.trim(),priority:($("#tprio",ov)?$("#tprio",ov).value:"Medium")};
     if(idx>=0) ACTIVE_MATRIX[idx]=row; else ACTIVE_MATRIX.push(row);
     await persistMatrix(); toast("Routing type saved"); close(); after&&after();};
 }
 function editTicketModal(t,after){
   const root=$("#modal-root"); const s=state.settings;
   const dueVal=t.due?String(t.due).slice(0,10):"";
+  const curCats=cats(); const startCat=t.category||curCats[0]||"";
   const ov=el(`<div class="overlay"><div class="modal" style="max-width:560px"><div style="display:flex;justify-content:space-between"><h3>Edit ${esc(t.ref)}</h3><button class="close-x" id="mx">✕</button></div><div id="m"></div>
-    <div class="field"><label>Subject</label><input id="sub" value="${esc(t.subject)}"/></div>
+    <div class="field"><label>Subject</label><div class="card inset"><div class="cmt-text">${esc(t.subject||"—")}</div></div></div>
+    <div class="row-2"><div class="field"><label>Category *</label><select id="cat">${curCats.map(c=>`<option ${c===startCat?"selected":""}>${esc(c)}</option>`).join("")}</select></div>
+      <div class="field"><label>Ticket type *</label><select id="typ"></select></div></div>
+    <div class="field"><label>Routing preview</label><div class="card inset" id="rprev" style="font-size:12px"></div></div>
     <div class="row-3"><div class="field"><label>Priority</label><select id="prio">${s.priorities.map(p=>`<option ${p===t.priority?"selected":""}>${esc(p)}</option>`).join("")}</select></div>
       <div class="field"><label>Due date</label><input id="due" type="date" value="${esc(dueVal)}"/></div>
       <div class="field"><label>Labels</label><select id="lbl" multiple size="3">${(s.labels||[]).map(l=>`<option ${(t.labels||[]).includes(l)?"selected":""}>${esc(l)}</option>`).join("")}</select></div></div>
-    <div class="field"><label>Details</label><textarea id="desc">${esc(t.description||"")}</textarea></div>
+    <div class="field"><label>Details</label><div class="card inset"><div class="cmt-text">${t.description?esc(t.description):'<span class=\'muted\'>No details provided.</span>'}</div></div></div>
     <div class="modal-foot"><button class="btn" id="c">Cancel</button><button class="btn primary" id="sv">Save changes</button></div></div></div>`);
   root.appendChild(ov); const close=()=>ov.remove(); $("#mx",ov).onclick=close;$("#c",ov).onclick=close;ov.onclick=e=>{if(e.target===ov)close();};
-  $("#sv",ov).onclick=async()=>{const sub=$("#sub",ov).value.trim();if(!sub){$("#m",ov).innerHTML=`<div class="msg err">Subject can't be empty.</div>`;return;}
-    t.subject=sub; t.priority=$("#prio",ov).value; t.due=$("#due",ov).value; t.description=$("#desc",ov).value.trim();
+  const catS=$("#cat",ov), typS=$("#typ",ov), prioS=$("#prio",ov), rprev=$("#rprev",ov);
+  const fillTypes=()=>{ const ts=typesForCat(catS.value); typS.innerHTML=ts.map(x=>`<option ${x===t.type?"selected":""}>${esc(x)}</option>`).join(""); };
+  const refresh=()=>{ const m=matrixFor(catS.value,typS.value);
+    if(m){ rprev.innerHTML=`Routing: <b>${esc(m.dept)}</b>${m.approvers.length?" · Approvers: "+m.approvers.map(r=>esc(ROLE_LABEL[r]||r)).join(", "):" · No approval"}`; if(m.priority) prioS.value=m.priority; }
+    else rprev.innerHTML='<span class="muted">—</span>'; };
+  fillTypes(); refresh();
+  catS.onchange=()=>{ fillTypes(); refresh(); };
+  typS.onchange=refresh;
+  $("#sv",ov).onclick=async()=>{
+    const cat=catS.value, typ=typS.value;
+    if(!cat||!typ){ $("#m",ov).innerHTML=`<div class="msg err">Pick a category and ticket type.</div>`; return; }
+    if(String(typ).trim().toLowerCase()==="-pending-"){ $("#m",ov).innerHTML=`<div class="msg err">Choose a real ticket type (not “-pending-”) before saving.</div>`; return; }
+    const m=matrixFor(cat,typ);
+    t.category=cat; t.type=typ; if(m){ t.department=m.dept; }
+    t.priority=prioS.value; t.due=$("#due",ov).value;
     t.labels=$$("#lbl option:checked",ov).map(o=>o.value);
-    t.activity.unshift({at:now(),by:state.user.id,byName:state.user.displayName,text:"Edited ticket details"}); t.updatedAt=now();
+    t.activity.unshift({at:now(),by:state.user.id,byName:state.user.displayName,text:`Set category/type to ${cat} › ${typ}`}); t.updatedAt=now();
     await db.saveTicket(t); toast(`${t.ref} updated`); close(); after&&after(); renderShell();};
 }
 function assignModal(t,after){
