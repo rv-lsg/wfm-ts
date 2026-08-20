@@ -727,7 +727,15 @@ const db={
   async setOffline(){ if(!state.user)return; if(this.isFirebase()){ try{await fb.fsMod.updateDoc(fb.fsMod.doc(fb.dbf,"users",state.user.id),{lastSeen:0});}catch(e){} } else { const u=readLS(LS.users,[]); const x=u.find(y=>y.id===state.user.id); if(x){x.lastSeen=0;writeLS(LS.users,u);} } },
   async getSettings(){ if(this.isFirebase()){ try{ const s=await fb.fsMod.getDoc(fb.fsMod.doc(fb.dbf,"settings","config")); return s.exists()?{...DEFAULT_SETTINGS,...s.data()}:{...DEFAULT_SETTINGS}; }catch(e){ console.warn("settings read blocked, using defaults:",e.message); return {...DEFAULT_SETTINGS}; } } return readLS(LS.settings,DEFAULT_SETTINGS); },
   async saveSettings(s){ if(this.isFirebase()){await fb.fsMod.setDoc(fb.fsMod.doc(fb.dbf,"settings","config"),s);return;} writeLS(LS.settings,s); },
-  async _nextRef(){ if(this.isFirebase()){const ref=fb.fsMod.doc(fb.dbf,"settings","counter");const s=await fb.fsMod.getDoc(ref);const n=((s.exists()?s.data().seq:1000)||1000)+1;await fb.fsMod.setDoc(ref,{seq:n});return "TKT-"+n;} let n=readLS(LS.seq,1000)+1;writeLS(LS.seq,n);return "TKT-"+n; },
+  async _nextRef(){ if(this.isFirebase()){
+      const ref=fb.fsMod.doc(fb.dbf,"settings","counter");
+      try{
+        const n=await fb.fsMod.runTransaction(fb.dbf, async (tx)=>{ const s=await tx.get(ref); const cur=((s.exists()?s.data().seq:1000)||1000); const next=cur+1; tx.set(ref,{seq:next}); return next; });
+        return "TKT-"+n;
+      }catch(e){ // fallback if transaction unavailable
+        const s=await fb.fsMod.getDoc(ref); const n=((s.exists()?s.data().seq:1000)||1000)+1; await fb.fsMod.setDoc(ref,{seq:n}); return "TKT-"+n;
+      }
+    } let n=readLS(LS.seq,1000)+1;writeLS(LS.seq,n);return "TKT-"+n; },
   async createTicket(t){
     const ref=await this._nextRef(); const m=matrixFor(t.category,t.type)||{};
     const doc={ ref, subject:t.subject, description:t.description, category:t.category, type:t.type, priority:t.priority, due:t.due||slaDue(t.priority),
@@ -1094,7 +1102,7 @@ async function drainInbox(){
   if(n||rn){ let msg=[]; if(n)msg.push(n+" ticket(s) created"); if(rn)msg.push(rn+" reply(ies) posted"); toast(msg.join(" · ")+" from email"); if(["tickets","board","dashboard","approvals"].includes(state.tab)) renderShell(); }
   } finally { window.__draining=false; }
 }
-function startPresence(){ if(window.__hb) clearInterval(window.__hb); try{db.heartbeat();drainInbox();drainDecisions();}catch(e){} window.__hb=setInterval(()=>{try{db.heartbeat();drainInbox();drainDecisions();}catch(e){}},45000); }
+function startPresence(){ if(window.__hb) clearInterval(window.__hb); try{db.heartbeat();drainInbox();drainDecisions();}catch(e){} window.__hb=setInterval(()=>{ if(document.hidden) return; try{db.heartbeat();drainInbox();drainDecisions();}catch(e){}},45000); }
 
 /* ---- tiny SVG charts ---- */
 function donut(pairs){ const total=Math.max(1,pairs.reduce((s,p)=>s+p.value,0)),r=52,c=2*Math.PI*r; let off=0,segs="";
