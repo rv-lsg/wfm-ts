@@ -984,8 +984,25 @@ async function drainDecisions(){
   if(applied){ toast(applied+" email decision(s) applied"); if(["approvals","tickets","board","dashboard"].includes(state.tab)) renderShell(); }
 }
 
+window.purgeEmailDupes = async function(){
+  if(!db.isFirebase()){ console.log("Not in Firebase mode."); return; }
+  let all=[]; try{ all=(await db.listTickets())||[]; }catch(e){ console.error(e); return; }
+  all.sort((a,b)=>String(a.createdAt||"").localeCompare(String(b.createdAt||""))); // keep the earliest
+  const seen=new Map(); let del=0;
+  for(const t of all){
+    if(t.requesterId!=="email-intake") continue;
+    const key = t.emailMessageId || t.conversationId || ((t.requesterEmail||"").toLowerCase()+"|"+(t.subject||"").trim().toLowerCase().slice(0,120));
+    if(seen.has(key)){ try{ await fb.fsMod.deleteDoc(fb.fsMod.doc(fb.dbf,"tickets",t.id)); del++; }catch(e){ console.error("del failed",t.id,e);} }
+    else seen.set(key,t.id);
+  }
+  console.log("Deleted "+del+" duplicate email tickets ("+seen.size+" kept).");
+  try{ toast("Removed "+del+" duplicate email tickets"); renderShell(); }catch(_){}
+  return del;
+};
 async function drainInbox(){
   if(!db.isFirebase()||!state.user) return;
+  if(window.__draining) return; window.__draining=true;
+  try{
   let snap; try{ snap=await fb.fsMod.getDocs(fb.fsMod.collection(fb.dbf,"inbox")); }catch(e){ return; }
   if(!snap.docs.length) return;
   const pr=pendingRoute();
@@ -993,7 +1010,7 @@ async function drainInbox(){
   let type; const types=typesForCat(cat);
   if(pr){ type=pr.type; } else { type=(state.settings.intake&&state.settings.intake.type); if(!type||!types.includes(type)) type=types[0]; }
   const prio=(state.settings.intake&&state.settings.intake.priority)||"Medium";
-  let n=0, rn=0;
+  let n=0, rn=0; const seen=new Set();
   let allT=[]; try{ allT=(await db.listTickets())||[]; }catch(_){}
   for(const d of snap.docs){ const e=d.data()||{};
     const subj=(e.subject||"").toString(); const body=(e.body||"").toString(); const from=(e.from||"").toString();
@@ -1018,6 +1035,19 @@ async function drainInbox(){
     }
     // reply with no matching ticket -> discard (don't spawn a stray ticket)
     if(isReply){ try{ await fb.fsMod.deleteDoc(fb.fsMod.doc(fb.dbf,"inbox",d.id)); }catch(_){}; continue; }
+    // DEDUPE: never create two tickets for the same email
+    const subjKey=(subj||"").trim().toLowerCase().slice(0,120);
+    const dupKey = mid || conv || ((from||"").toLowerCase()+"|"+subjKey);
+    // Dedupe priority: trust real IDs first. Only fall back to from+subject when the email has NO id at all.
+    const hasId = !!(mid || conv);
+    const already = (mid && allT.some(x=>x.emailMessageId && x.emailMessageId===mid))
+      || (conv && allT.some(x=>x.conversationId && x.conversationId===conv))
+      || ( !hasId && allT.some(x=>x.requesterId==="email-intake" && !x.emailMessageId && !x.conversationId && (x.requesterEmail||"").toLowerCase()===(from||"").toLowerCase() && (x.subject||"").trim().toLowerCase().slice(0,120)===subjKey) );
+    if(seen.has(dupKey) || already){
+      try{ await fb.fsMod.deleteDoc(fb.fsMod.doc(fb.dbf,"inbox",d.id)); }catch(_){}
+      continue;
+    }
+    seen.add(dupKey);
     // brand-new request -> create a ticket
     try{
       const nt=await db.createTicket({ subject:(e.subject||"Email request").toString().slice(0,120),
@@ -1031,11 +1061,13 @@ async function drainInbox(){
         if(acc && !(nt.approvals||[]).some(a=>a.role===acc.role)){ nt.approvals=[...(nt.approvals||[]),{role:acc.role,decision:"",by:"",byName:"",at:"",note:""}]; } }
       if((nt.approvals||[]).some(a=>a.decision==="")) nt.status="pending_approval";
       await db.saveTicket(nt);
+      allT.push({emailMessageId:mid, conversationId:conv, requesterId:"email-intake", requesterEmail:(e.from||"").toString(), subject:nt.subject});
       await queueApprovalEmails(nt);
       await fb.fsMod.deleteDoc(fb.fsMod.doc(fb.dbf,"inbox",d.id)); n++;
     }catch(err){ console.error("Email intake drain failed:",err); toast("Email intake blocked: "+(err&&err.message?err.message:"permission")); }
   }
   if(n||rn){ let msg=[]; if(n)msg.push(n+" ticket(s) created"); if(rn)msg.push(rn+" reply(ies) posted"); toast(msg.join(" · ")+" from email"); if(["tickets","board","dashboard","approvals"].includes(state.tab)) renderShell(); }
+  } finally { window.__draining=false; }
 }
 function startPresence(){ if(window.__hb) clearInterval(window.__hb); try{db.heartbeat();drainInbox();drainDecisions();}catch(e){} window.__hb=setInterval(()=>{try{db.heartbeat();drainInbox();drainDecisions();}catch(e){}},45000); }
 
