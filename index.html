@@ -594,12 +594,28 @@ function requiredApprovers(cat,type){ const m=matrixFor(cat,type); return m?m.ap
 function canRequest(role,cat,type){ if(role==="admin"||role==="agent") return true; const m=matrixFor(cat,type); if(!m) return true; return m.perm[role]===undefined || m.perm[role]!=="none"; }
 function permNote(role,cat,type){ const m=matrixFor(cat,type); if(!m||role==="admin"||role==="agent") return ""; return m.perm[role]==="cond"?"Conditional for your role — may need higher sign-off.":""; }
 function buildApprovals(cat,type){ return requiredApprovers(cat,type).map(r=>({role:r,decision:"",by:"",byName:"",at:"",note:""})); }
+// Walk a user's reportsTo chain to find the specific approver holding a given role.
+function chainManagerOfRole(requesterId, role){
+  const byId=id=>((state.users||[]).find(u=>u.id===id));
+  let cur=byId(requesterId), hops=0;
+  while(cur && cur.reportsTo && hops<6){ const mgr=byId(cur.reportsTo); if(!mgr) break; if(mgr.role===role) return mgr; cur=mgr; hops++; }
+  return null;
+}
+// After approvals are built, bind management-role steps to the requester's specific manager.
+function bindHierarchyApprovers(t){
+  if(!t||!t.approvals) return t;
+  for(const a of t.approvals){
+    if(a.decision!=="" ) continue;
+    if(a.role==="opm"||a.role==="opd"){ const mgr=chainManagerOfRole(t.requesterId,a.role); if(mgr){ a.approverId=mgr.id; a.approverName=mgr.displayName||mgr.email; } }
+  }
+  return t;
+}
 function initialStatus(cat,type){ return requiredApprovers(cat,type).length ? "pending_approval" : "assigned"; }
 // Who may act on the approval gate now?
 function canApprove(user,t){
   if(t.status!=="pending_approval") return false;
   if(user.role==="admin") return true;
-  return t.approvals.some(a=>a.decision==="" && a.role===user.role);
+  return t.approvals.some(a=>a.decision==="" && a.role===user.role && (!a.approverId || a.approverId===user.id));
 }
 // Apply an approval decision by the given user (admin acts for the next pending role).
 function applyApproval(t,user,decision,note){
@@ -849,7 +865,7 @@ function renderAuth(){
 }
 
 /* ============================ SHELL ============================ */
-function tabsForRole(role){ const t=[{id:"dashboard",label:"Dashboard"},{id:"board",label:"Board"},{id:"tickets",label:"Tickets"},{id:"new",label:"New Ticket"}]; if(role!=="agent")t.push({id:"approvals",label:"My Approvals"}); if(role==="admin"){t.push({id:"accounts",label:"Accounts"});} return t; }
+function tabsForRole(role){ const t=[{id:"dashboard",label:"Dashboard"},{id:"board",label:"Board"},{id:"tickets",label:"Tickets"},{id:"new",label:"Create New Ticket"}]; if(role!=="agent")t.push({id:"approvals",label:"My Approvals"}); if(role==="wfm"||role==="admin"){t.push({id:"contacts",label:"Contacts"});} if(role==="admin"){t.push({id:"accounts",label:"Accounts"});} return t; }
 async function renderShell(){
   if(state._chatPoll){clearInterval(state._chatPoll);state._chatPoll=null;}
   if(state.user && !window.__hb) startPresence();
@@ -882,7 +898,7 @@ async function renderShell(){
       else if(act==="logout"){(async()=>{await db.setOffline();if(window.__hb){clearInterval(window.__hb);window.__hb=null;}await db.signOut();state.user=null;state.tab="dashboard";renderAuth();})();}
     }; }); };
   if(!window.__menusBound){ window.__menusBound=true; document.addEventListener("click",closeFloat); window.addEventListener("resize",closeFloat); document.addEventListener("keydown",(e)=>{if(e.key==="Escape")closeFloat();}); }
-  const view=$("#view",shell); ({dashboard:viewDashboard,board:viewBoard,tickets:viewTickets,new:viewNewTicket,approvals:viewApprovals,chat:viewMessages,me:viewMyAccount,accounts:viewAccounts,settings:viewSettings}[state.tab]||viewDashboard)(view);
+  const view=$("#view",shell); ({dashboard:viewDashboard,board:viewBoard,tickets:viewTickets,new:viewNewTicket,approvals:viewApprovals,chat:viewMessages,me:viewMyAccount,accounts:viewAccounts,contacts:viewContacts,settings:viewSettings}[state.tab]||viewDashboard)(view);
   mountChat();
 }
 const nameFor=(id)=>{const u=state.users.find(x=>x.id===id);return u?u.displayName:"";};
@@ -932,7 +948,7 @@ async function queueApprovalEmails(t,force){
   for(const a of (t.approvals||[])){
     if(a.decision!=="" ) continue;
     if(!force && t.emailedRoles.includes(a.role)) continue;
-    const approvers = users.filter(u=>u.role===a.role && u.email && (u.status?u.status==="active":true));
+    const approvers = a.approverId ? users.filter(u=>u.id===a.approverId && u.email) : users.filter(u=>u.role===a.role && u.email && (u.status?u.status==="active":true));
     const sendUrl=(state.settings&&state.settings.approvalSendUrl)||"", decUrl=(state.settings&&state.settings.approvalDecisionUrl)||"";
     for(const ap of approvers){
       const payload={ token:randToken(), ticketId:t.id, ticketRef:t.ref, ticketSubject:t.subject, ticketType:t.type,
@@ -984,6 +1000,15 @@ async function drainDecisions(){
   if(applied){ toast(applied+" email decision(s) applied"); if(["approvals","tickets","board","dashboard"].includes(state.tab)) renderShell(); }
 }
 
+window.deleteAllTickets = async function(pw){
+  if(!db.isFirebase()){ console.log("Not in Firebase mode."); return; }
+  if(pw!=="wfm2026"){ console.warn('Blocked. Usage: deleteAllTickets("wfm2026")'); return; }
+  let all=[]; try{ all=(await db.listTickets())||[]; }catch(e){ console.error(e); return; }
+  let del=0; for(const t of all){ try{ await fb.fsMod.deleteDoc(fb.fsMod.doc(fb.dbf,"tickets",t.id)); del++; }catch(e){ console.error("del failed",t.id,e); } }
+  console.log("Deleted "+del+" ticket(s).");
+  try{ toast("Deleted "+del+" ticket(s)"); renderShell(); }catch(_){}
+  return del;
+};
 window.purgeEmailDupes = async function(){
   if(!db.isFirebase()){ console.log("Not in Firebase mode."); return; }
   let all=[]; try{ all=(await db.listTickets())||[]; }catch(e){ console.error(e); return; }
@@ -1371,7 +1396,7 @@ function secFlow(r){
 
 function viewNewTicket(root){
   const s=state.settings,u=state.user; root.innerHTML="";
-  root.appendChild(el(`<div class="section-h"><h2>Raise a ticket</h2><div class="rule"></div></div>`));
+  root.appendChild(el(`<div class="section-h"><h2>Create New Ticket</h2><div class="rule"></div></div>`));
   const pending=[]; const selLabels=new Set();
   let priority = s.priorities.includes("Medium") ? "Medium" : (s.priorities[Math.floor((s.priorities.length-1)/2)]||s.priorities[0]);
   const card=el(`<div class="card" style="max-width:760px"><div id="m"></div>
@@ -1426,6 +1451,7 @@ function viewNewTicket(root){
       const attachments=[]; for(const p of pending){ const meta=await db.uploadAttachment(p.file); meta.analysis=p.analysis; attachments.push(meta); }
       const t=await db.createTicket({subject,description,category,type,priority,due:due.value,labels:[...selLabels],requesterId:u.id,requesterName:u.displayName,requesterEmail:u.email,site:u.site,lob:u.lob,attachments});
       notifyWebhook("ticket.created",t);
+      bindHierarchyApprovers(t); if(t.status==="pending_approval") await db.saveTicket(t);
       queueApprovalEmails(t);
       toast(`${t.ref} submitted`);
       if(again){ viewNewTicket(root); } else { state.tab="tickets"; renderShell(); }
@@ -1691,6 +1717,86 @@ function rerouteModal(t,after){
 }
 
 /* ============================ ACCOUNTS ============================ */
+async function viewContacts(root){
+  root.innerHTML=`<div class="empty">Loading…</div>`;
+  const me=state.user;
+  let tickets=[], users=[];
+  try{ tickets=(await db.listTickets())||[]; }catch(_){}
+  try{ users=(state.users&&state.users.length)?state.users:await db.listUsers(); state.users=users; }catch(_){}
+  const userByEmail=e=>users.find(u=>(u.email||"").toLowerCase()===(e||"").toLowerCase());
+  const userById=id=>users.find(u=>u.id===id);
+  // Build contact map keyed by lowercased email
+  const map=new Map(); // email -> {name,email,role,tickets:[{t,assoc}]}
+  const touch=(email,name,role)=>{ const k=(email||"").toLowerCase(); if(!k) return null;
+    if(!map.has(k)) map.set(k,{name:name||email,email,role:role||"External",tickets:[]}); 
+    const c=map.get(k); if((c.role==="External"||!c.role)&&role) c.role=role; if((!c.name||c.name===c.email)&&name) c.name=name; return c; };
+  // seed all account holders
+  users.forEach(u=>touch(u.email,u.displayName,ROLE_LABEL[u.role]||u.role));
+  const addAssoc=(email,name,role,t,assoc)=>{ const c=touch(email,name,role); if(c) c.tickets.push({t,assoc}); };
+  tickets.forEach(t=>{
+    // requester
+    const rEmail=t.requesterEmail||""; const rUser=userById(t.requesterId);
+    if(rEmail) addAssoc(rEmail, rUser?rUser.displayName:(t.requesterName||rEmail), rUser?(ROLE_LABEL[rUser.role]||rUser.role):"External", t, "Requester");
+    // assignee (worked on)
+    if(t.assigneeId){ const au=userById(t.assigneeId); if(au) addAssoc(au.email, au.displayName, ROLE_LABEL[au.role]||au.role, t, "Worked on"); }
+    // approvers who acted
+    (t.approvals||[]).forEach(a=>{ if(a.by && a.by!=="email"){ const pu=userById(a.by); if(pu) addAssoc(pu.email, pu.displayName, ROLE_LABEL[pu.role]||pu.role, t, "Approved"); } });
+    // CC
+    (t.cc||[]).forEach(em=>{ const cu=userByEmail(em); addAssoc(em, cu?cu.displayName:em, cu?(ROLE_LABEL[cu.role]||cu.role):"External", t, "CC"); });
+  });
+  let contacts=[...map.values()];
+  // WFM analyst contact records only include tickets they personally worked on
+  contacts.forEach(c=>{ const cu=userByEmail(c.email); if(cu && cu.role==="wfm"){ c.tickets=c.tickets.filter(x=>x.t.assigneeId===cu.id || (x.t.approvals||[]).some(a=>a.by===cu.id)); } });
+  contacts=contacts.filter(c=>c.tickets.length>0 || userByEmail(c.email)); // keep account holders even at 0
+  contacts.sort((a,b)=>b.tickets.length-a.tickets.length || a.name.localeCompare(b.name));
+
+  root.innerHTML="";
+  root.appendChild(el(`<div class="section-h"><h2>Contacts (${contacts.length})</h2><div class="rule"></div></div>`));
+  const bar=el(`<div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin-bottom:12px">
+    <input id="csearch" placeholder="Search name or email…" style="flex:1;min-width:220px"/>
+    <select id="cassoc" style="width:auto"><option value="">All associations</option><option>Requester</option><option>Worked on</option><option>Approved</option><option>CC</option></select>
+    <select id="csort" style="width:auto"><option value="tickets">Sort: most tickets</option><option value="name">Sort: name</option></select>
+  </div>`);
+  root.appendChild(bar);
+  const listWrap=el(`<div></div>`); root.appendChild(listWrap);
+
+  const assocColor=a=>({ "Requester":"var(--cyan)","Worked on":"var(--green)","Approved":"var(--accent)","CC":"var(--muted)" }[a]||"var(--muted)");
+  function render(){
+    const q=$("#csearch",bar).value.trim().toLowerCase();
+    const fa=$("#cassoc",bar).value;
+    const sort=$("#csort",bar).value;
+    let rows=contacts.filter(c=> (!q || (c.name||"").toLowerCase().includes(q) || (c.email||"").toLowerCase().includes(q)) );
+    if(fa) rows=rows.map(c=>({...c,tickets:c.tickets.filter(x=>x.assoc===fa)})).filter(c=>c.tickets.length>0);
+    rows.sort(sort==="name"?(a,b)=>a.name.localeCompare(b.name):(a,b)=>b.tickets.length-a.tickets.length||a.name.localeCompare(b.name));
+    listWrap.innerHTML="";
+    if(!rows.length){ listWrap.appendChild(el('<div class="empty">No contacts match.</div>')); return; }
+    rows.forEach(c=>{
+      const card=el(`<div class="card" style="margin-bottom:10px">
+        <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;cursor:pointer" class="chead">
+          <div><b>${esc(c.name)}</b> <span class="muted" style="font-size:12px">${esc(c.email)}</span></div>
+          <div style="display:flex;gap:10px;align-items:center"><span class="lbl">${esc(c.role)}</span><span class="muted" style="font-size:12px">${c.tickets.length} ticket(s)</span><span class="muted" id="chev">▸</span></div>
+        </div>
+        <div class="cbody" style="display:none;margin-top:10px"></div>
+      </div>`);
+      const body=$(".cbody",card);
+      $(".chead",card).onclick=()=>{ const open=body.style.display!=="none"; body.style.display=open?"none":"block"; $("#chev",card).textContent=open?"▸":"▾";
+        if(!open && !body.dataset.built){ body.dataset.built="1";
+          const seen=new Set();
+          c.tickets.forEach(({t,assoc})=>{
+            const row=el(`<div class="rowlink" style="display:flex;justify-content:space-between;gap:10px;padding:7px 4px;border-top:1px solid var(--line);cursor:pointer">
+              <span>${esc(t.ref)} · ${esc(t.subject||"—")}</span>
+              <span style="white-space:nowrap"><span class="lbl" style="color:${assocColor(assoc)};border-color:${assocColor(assoc)}">${assoc}</span> ${statusBadge(t)}</span></div>`);
+            row.onclick=()=>openTicket(t.id);
+            body.appendChild(row);
+          });
+        }
+      };
+      listWrap.appendChild(card);
+    });
+  }
+  $("#csearch",bar).oninput=render; $("#cassoc",bar).onchange=render; $("#csort",bar).onchange=render;
+  render();
+}
 async function viewAccounts(root){
   root.innerHTML=`<div class="empty">Loading…</div>`; const users=await db.listUsers(); state.users=users; users.sort((a,b)=>((a.status==="pending")?0:1)-((b.status==="pending")?0:1));
   root.innerHTML="";
@@ -1707,14 +1813,22 @@ async function viewAccounts(root){
   $("#seed",root).onclick=async()=>{ if(!confirm("Create demo accounts (TL/OPM/OPD/HR + agent, password wfm2026)?"))return;
     const demo=[["Maria (TL)","tl@wfm.local","tl"],["JM (WFM)","wfm@wfm.local","wfm"],["Edmond (OPM)","opm@wfm.local","opm"],["Richard (OPD)","opd@wfm.local","opd"],["Grace (HR)","hr@wfm.local","hr"],["Sam (Agent)","agent@wfm.local","agent"]];
     for(const[n,e,r]of demo){try{const a=await db.createAccount({email:e,password:"wfm2026",displayName:n,role:"agent",site:"MNL",lob:"WFM",status:"pending"}); if(a&&a.id) await db.updateUser(a.id,{role:r,status:"active"});}catch(x){}} toast("Demo org created"); viewAccounts(root); };
-  root.appendChild(el(`<div class="section-h"><h2>People (${users.length})</h2><div class="rule"></div></div>`));
-  const wrap=el(`<div class="table-wrap"><table><thead><tr><th>Name</th><th>Email</th><th>Site / LOB</th><th>Role</th><th>Status</th><th></th></tr></thead><tbody></tbody></table></div>`);
+    root.appendChild(el(`<div class="section-h"><h2>People (${users.length})</h2><div class="rule"></div></div>`));
+  const wrap=el(`<div class="table-wrap"><table><thead><tr><th>Name</th><th>Email</th><th>Site / LOB</th><th>Role</th><th>Reports to</th><th>Status</th><th></th></tr></thead><tbody></tbody></table></div>`);
   const tb=$("tbody",wrap);
-  users.forEach(us=>{const tr=el(`<tr><td><span class="pdot ${isActive(us)?'online':'offline'}"></span>${esc(us.displayName||"—")}</td><td class="muted">${esc(us.email)}</td><td>${esc(us.site||"—")} / ${esc(us.lob||"—")}</td><td></td><td class="stcell"></td><td><button class="btn sm ghost">Reset password</button></td></tr>`);
+  users.forEach(us=>{const tr=el(`<tr><td><span class="pdot ${isActive(us)?'online':'offline'}"></span>${esc(us.displayName||"—")}</td><td class="muted">${esc(us.email)}</td><td>${esc(us.site||"—")} / ${esc(us.lob||"—")}</td><td></td><td class="rtcell"></td><td class="stcell"></td><td><button class="btn sm ghost">Reset password</button></td></tr>`);
     const sel=el(`<select style="width:auto">${ROLES.map(r=>`<option value="${r}" ${r===us.role?"selected":""}>${ROLE_LABEL[r]}</option>`).join("")}</select>`);
     sel.onchange=async()=>{await db.updateUser(us.id,{role:sel.value});toast(`${us.displayName} → ${ROLE_LABEL[sel.value]}`);viewAccounts(root);};
     if(us.id===state.user.id){sel.disabled=true;sel.title="You can't change your own role.";}
     $("td:nth-child(4)",tr).appendChild(sel);
+    // Reports-to (TL -> OPM, OPM -> OPD)
+    const rtc=$(".rtcell",tr);
+    const mgrRole = us.role==="tl" ? "opm" : (us.role==="opm" ? "opd" : null);
+    if(mgrRole){ const opts=users.filter(x=>x.role===mgrRole);
+      const rs=el(`<select style="width:auto"><option value="">— none —</option>${opts.map(o=>`<option value="${o.id}" ${o.id===us.reportsTo?"selected":""}>${esc(o.displayName||o.email)}</option>`).join("")}</select>`);
+      rs.onchange=async()=>{ await db.updateUser(us.id,{reportsTo:rs.value||""}); toast(`${us.displayName||"User"} reports-to updated`); viewAccounts(root); };
+      rtc.appendChild(rs);
+    } else { rtc.innerHTML='<span class="muted">—</span>'; }
     const _st=us.status||"active", _sc=$(".stcell",tr);
     if(_st==="pending"){ _sc.innerHTML='<span class="lbl" style="color:var(--amber);border-color:var(--amber)">pending</span> '; const ap=el('<button class="btn sm">Approve</button>'),dn=el('<button class="btn sm danger">Deny</button>'); ap.onclick=async()=>{await db.updateUser(us.id,{status:"active"});toast((us.displayName||us.email)+" approved");viewAccounts(root);}; dn.onclick=async()=>{await db.updateUser(us.id,{status:"denied"});toast((us.displayName||us.email)+" denied");viewAccounts(root);}; _sc.appendChild(ap); _sc.appendChild(dn); }
     else if(_st==="denied"){ _sc.innerHTML='<span class="lbl" style="color:var(--accent);border-color:var(--accent)">denied</span> '; const ap=el('<button class="btn sm">Approve</button>'); ap.onclick=async()=>{await db.updateUser(us.id,{status:"active"});toast((us.displayName||us.email)+" approved");viewAccounts(root);}; _sc.appendChild(ap); }
