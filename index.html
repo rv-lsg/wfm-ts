@@ -483,6 +483,8 @@
   [data-theme="light"] .auth-tabs button.active{background:#fff;color:var(--txt);border-color:var(--accent)}
   .via-mail{font-size:10px;color:var(--cyan);border:1px solid color-mix(in srgb,var(--cyan) 45%,transparent);padding:1px 7px;border-radius:20px;margin:0 6px;vertical-align:middle}
   .cmt-text{white-space:pre-wrap;word-break:break-word}
+  .icon-btn.spin{animation:spin360 .5s linear}
+  @keyframes spin360{from{transform:rotate(0)}to{transform:rotate(360deg)}}
 </style>
 </head>
 <body>
@@ -881,6 +883,7 @@ async function renderShell(){
   const shell=el(`<div>
     <div class="topbar"><div class="brand"><span class="orb"></span><div>${esc(s.appName)}<small>${esc(s.tagline)}</small></div></div><div class="spacer"></div>
       <span class="backend-chip ${backend}">${backend==="firebase"?"● FIREBASE":"● LOCAL"}</span>
+      <button class="icon-btn" id="refresh" title="Refresh data">⟳</button>
       <button class="icon-btn" id="bell" title="Notifications">🔔<span class="bell-dot" id="belldot" style="display:none"></span></button>
       <button class="profile-btn" id="profbtn"><span class="avatar">${initials(u.displayName)}</span><span class="pname"><b>${esc(u.displayName)}</b><small>${esc(ROLE_LABEL[u.role]||u.role)}${u.site?" · "+esc(u.site):""}</small></span></button></div>
     <div class="nav" id="nav"></div><div class="wrap" id="view"></div></div>`);
@@ -888,6 +891,12 @@ async function renderShell(){
   const nav=$("#nav",shell); tabsForRole(u.role).forEach(t=>{const b=el(`<button data-tab="${t.id}" class="${state.tab===t.id?'active':''}">${t.label}</button>`);b.onclick=()=>{state.tab=t.id;renderShell();};nav.appendChild(b);});
   const notifs=await buildNotifications(u);
   const bd=$("#belldot",shell); if(bd){ if(notifs.length){bd.style.display="";bd.textContent=notifs.length>9?"9+":notifs.length;} else bd.style.display="none"; }
+  const rfb=$("#refresh",shell); if(rfb){ rfb.onclick=async()=>{ if(rfb.dataset.busy)return; rfb.dataset.busy="1"; rfb.classList.add("spin");
+    try{ await drainDecisions(); await drainInbox(); }catch(_){}
+    const cur=$("#view",shell); try{ ({dashboard:viewDashboard,board:viewBoard,tickets:viewTickets,new:viewNewTicket,approvals:viewApprovals,chat:viewMessages,me:viewMyAccount,accounts:viewAccounts,contacts:viewContacts,settings:viewSettings}[state.tab]||viewDashboard)(cur); }catch(_){}
+    try{ const notifs=await buildNotifications(u); const bd=$("#belldot",shell); if(bd){ if(notifs.length){bd.style.display="";bd.textContent=notifs.length>9?"9+":notifs.length;} else bd.style.display="none"; } }catch(_){}
+    setTimeout(()=>{ rfb.classList.remove("spin"); delete rfb.dataset.busy; }, 500);
+  }; }
   const closeFloat=()=>{ const m=document.getElementById("floatmenu"); if(m)m.remove(); };
   const openFloat=(btn,kind,html,wire)=>{ const ex=document.getElementById("floatmenu"); if(ex&&ex.dataset.k===kind){closeFloat();return;} closeFloat();
     const r=btn.getBoundingClientRect();
@@ -962,8 +971,8 @@ async function queueApprovalEmails(t,force){
       const payload={ token:randToken(), ticketId:t.id, ticketRef:t.ref, ticketSubject:t.subject, ticketType:t.type,
         ticketPriority:t.priority, ticketDept:t.department||"", requesterName:t.requesterName||"",
         approverEmail:ap.email, approverName:ap.displayName||"", approverRole:a.role, at:now(), sent:true };
-      try{ await fb.fsMod.addDoc(fb.fsMod.collection(fb.dbf,"outbox"),payload); }catch(e){}
-      if(sendUrl && decUrl){ try{ fetch(sendUrl,{method:"POST",mode:"no-cors",headers:{"Content-Type":"text/plain;charset=utf-8"},body:JSON.stringify({to:payload.approverEmail,subject:`Approval needed — ${payload.ticketRef}: ${payload.ticketSubject}`,html:approvalEmailHtml(payload,decUrl)})}).catch(()=>{}); }catch(e){} }
+      try{ await fb.fsMod.setDoc(fb.fsMod.doc(fb.dbf,"outbox",payload.token),payload); }catch(e){}
+      if(sendUrl && decUrl){ try{ fetch(sendUrl,{method:"POST",mode:"no-cors",headers:{"Content-Type":"text/plain;charset=utf-8"},body:JSON.stringify({to:payload.approverEmail,subject:`Approval needed — ${payload.ticketRef}: ${payload.ticketSubject}`,html:approvalEmailHtml(payload,decUrl),token:payload.token})}).catch(()=>{}); }catch(e){} }
     }
     t.emailedRoles.push(a.role); changed=true;
   }
@@ -999,6 +1008,11 @@ async function drainDecisions(){
       const decision = d.decision==="approved"?"approved":"rejected";
       const note = (decision==="rejected") ? (String(d.note||"").trim()||"(no reason provided)") : String(d.note||"").trim();
       const nx=applyApproval(t,pseudo,decision,note);
+      // in-thread confirmation reply to the approver
+      try{ const ru=(state.settings&&state.settings.replyFlowUrl)||"";
+        if(ru && ob.approverEmail){ const cmsg = decision==="approved" ? "Ticket approved! Your response has been recorded." : "Ticket denied. Your response has been recorded.";
+          fetch(ru,{method:"POST",mode:"no-cors",headers:{"Content-Type":"text/plain;charset=utf-8"},body:JSON.stringify({messageId:ob.sentMessageId||"", to:ob.approverEmail, subject:"Re: Approval — "+(ob.ticketRef||""), body:cmsg})}).catch(()=>{}); }
+      }catch(_){}
       nx.activity=[{at:now(),by:pseudo.id,byName:pseudo.displayName,text:(decision==="approved"?`Approved via email (${ROLE_LABEL[ob.approverRole]||ob.approverRole})`:`Rejected via email (${ROLE_LABEL[ob.approverRole]||ob.approverRole})`)+(note&&decision==="rejected"?": "+note:"")}, ...(t.activity||[])];
       try{ await db.saveTicket(nx); applied++; }catch(e){}
     }
@@ -1705,11 +1719,27 @@ function editTicketModal(t,after){
     if(!cat||!typ){ $("#m",ov).innerHTML=`<div class="msg err">Pick a category and ticket type.</div>`; return; }
     if(String(typ).trim().toLowerCase()==="-pending-"){ $("#m",ov).innerHTML=`<div class="msg err">Choose a real ticket type (not “-pending-”) before saving.</div>`; return; }
     const m=matrixFor(cat,typ);
+    const reqRoles=requiredApprovers(cat,typ);
+    const inProgress=(t.approvals||[]).some(a=>a.decision!=="");
+    // Popup: tell the user this type needs approval and that an email will be sent
+    if(reqRoles.length && !inProgress){
+      const names=reqRoles.map(r=>ROLE_LABEL[r]||r).join(", ");
+      if(!confirm(`"${typ}" requires approval from: ${names}.\n\nSaving will set the ticket to Pending Approval and automatically email the approver(s).\n\nContinue?`)) return;
+    }
     t.category=cat; t.type=typ; if(m){ t.department=m.dept; }
     t.priority=prioS.value; t.due=$("#due",ov).value;
     t.labels=$$("#lbl option:checked",ov).map(o=>o.value);
-    t.activity.unshift({at:now(),by:state.user.id,byName:state.user.displayName,text:`Set category/type to ${cat} › ${typ}`}); t.updatedAt=now();
-    await db.saveTicket(t); toast(`${t.ref} updated`); close(); after&&after(); renderShell();};
+    // (re)build approvals for the new type when needed — fixes email tickets stuck at -pending-
+    let willEmail=false;
+    if(reqRoles.length && !inProgress){
+      t.approvals=buildApprovals(cat,typ); t.emailedRoles=[]; bindHierarchyApprovers(t); t.status="pending_approval"; willEmail=true;
+    } else if(!reqRoles.length && !inProgress && (t.status==="pending_approval"||t.status==="new")){
+      t.status="assigned"; // no approval needed → moves to Tickets (still unassigned)
+    }
+    t.activity.unshift({at:now(),by:state.user.id,byName:state.user.displayName,text:`Set category/type to ${cat} › ${typ}`+(willEmail?" · approval requested":"")}); t.updatedAt=now();
+    await db.saveTicket(t);
+    if(willEmail){ try{ await queueApprovalEmails(t); }catch(_){} }
+    toast(willEmail?`${t.ref} updated — approval email sent`:`${t.ref} updated`); close(); after&&after(); renderShell();};
 }
 function assignModal(t,after){
   const root=$("#modal-root"); const staff=state.users.filter(u=>u.role!=="agent");
