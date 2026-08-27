@@ -997,8 +997,9 @@ async function drainDecisions(){
   let applied=0;
   for(const dd of dec.docs){
     const d=dd.data()||{}; const cleanup=async()=>{ try{ await fb.fsMod.deleteDoc(fb.fsMod.doc(fb.dbf,"decisions",dd.id)); }catch(e){} };
-    const ob=byToken[d.token];
-    if(!ob){ await cleanup(); continue; }                       // stale / already-used token
+    let ob=byToken[d.token];
+    if(!ob && d.token){ try{ const s=await fb.fsMod.getDoc(fb.fsMod.doc(fb.dbf,"outbox",d.token)); if(s.exists()) ob={id:s.id,...s.data()}; }catch(_){}} // direct lookup (outbox keyed by token)
+    if(!ob){ console.warn("Decision token has no matching outbox record — leaving decision for retry:", d.token); continue; } // do NOT delete; retry next drain
     let ts; try{ ts=await fb.fsMod.getDoc(fb.fsMod.doc(fb.dbf,"tickets",ob.ticketId)); }catch(e){ await cleanup(); continue; }
     if(!ts.exists()){ await invalidateOutbox(ob.ticketId,ob.approverRole); await cleanup(); continue; }
     const t={id:ob.ticketId,...ts.data()};
@@ -1125,7 +1126,7 @@ async function drainInbox(){
   } finally { window.__draining=false; }
 }
 
-function startPresence(){ if(window.__hb) clearInterval(window.__hb); try{db.heartbeat();drainInbox();drainDecisions();}catch(e){} window.__hb=setInterval(()=>{ if(document.hidden) return; try{db.heartbeat();drainInbox();drainDecisions();}catch(e){}},45000); }
+function startPresence(){ if(window.__hb) clearInterval(window.__hb); try{db.heartbeat();}catch(e){} try{drainDecisions();}catch(e){} try{drainInbox();}catch(e){} window.__hb=setInterval(()=>{ try{ drainDecisions(); }catch(e){} if(document.hidden) return; try{db.heartbeat();}catch(e){} try{drainInbox();}catch(e){}},45000); }
 
 /* ---- tiny SVG charts ---- */
 function donut(pairs){ const total=Math.max(1,pairs.reduce((s,p)=>s+p.value,0)),r=52,c=2*Math.PI*r; let off=0,segs="";
