@@ -1101,6 +1101,14 @@ async function drainInbox(){
       }catch(err){ console.error("Reply attach failed:",err); }
       continue;
     }
+    // Cross-browser guard: claim this EMAIL's identity so two open accounts can't each create a ticket
+    { const subjKey2=(subj||"").trim().toLowerCase().slice(0,120);
+      const emailKey=(mid||conv||((from||"").toLowerCase()+"|"+subjKey2)).replace(/[^a-zA-Z0-9]/g,"").slice(0,140);
+      if(emailKey){ let ew=false;
+        try{ await fb.fsMod.runTransaction(fb.dbf, async(tx)=>{ const cref=fb.fsMod.doc(fb.dbf,"claims",emailKey); const s=await tx.get(cref); if(s.exists()) return; tx.set(cref,{at:now()}); ew=true; }); }catch(_){ ew=false; }
+        if(!ew) continue; // another open account is already creating this ticket
+      }
+    }
     // create a brand-new ticket
     try{
       const nt=await db.createTicket({ subject:(e.subject||"Email request").toString().slice(0,120),
@@ -1459,7 +1467,7 @@ function viewNewTicket(root){
     routeEl.innerHTML=`<div class="route-card"><div class="route-h">ROUTING PREVIEW</div><div class="route-chain">${steps.join('<span class="rarrow">→</span>')}</div>${m.approvers.length>1?'<div class="route-note">Dual approval — every listed role must approve.</div>':''}${warn?`<div class="perm-warn">⚠ ${esc(warn)}</div>`:""}${blocked?`<div class="perm-warn">⚠ Your role can't raise this type directly per policy — it may need reassignment.</div>`:""}</div>`;
   };
   const fillTypes=()=>{typeSel.innerHTML=typesForCat(catSel.value).map(t=>`<option>${esc(t)}</option>`).join("");updateRoute();};
-  const applyTypePrio=()=>{ const m=matrixFor(catSel.value,typeSel.value); if(m) setPrio(m.priority||"Medium"); };
+  const applyTypePrio=()=>{ const m=matrixFor(catSel.value,typeSel.value); if(m&&m.priority) setPrio(m.priority); };
   catSel.onchange=()=>{ fillTypes(); applyTypePrio(); }; typeSel.onchange=()=>{ updateRoute(); applyTypePrio(); };
   fillTypes(); { const pr=pendingRoute(); if(pr){ catSel.value=pr.cat; fillTypes(); typeSel.value=pr.type; updateRoute(); } } setPrio(priority);
   const drop=$("#drop",card),fileInput=$("#file",card),attsEl=$("#atts",card);
@@ -1651,7 +1659,7 @@ async function openTicket(id, opts){
     const mine = t.assigneeId===u.id;
     const atm=el(`<button class="btn">${mine?"✓ Assigned to you":"Assign to me"}</button>`);
     if(mine) atm.disabled=true;
-    atm.onclick=async()=>{ atm.disabled=true; if(t.assigneeId && t.assigneeId!==u.id){ toast("Already assigned to "+(t.assigneeName||"someone else")+"."); atm.disabled=false; return; } const res=await claimAssignee(t.id, u.id, u.displayName); if(!res.ok){ toast("Could not claim — "+res.name+" got it first."); close(); renderShell(); return; } t.assigneeId=u.id; t.assigneeName=u.displayName; t.activity=[{at:now(),by:u.id,byName:u.displayName,text:"Assigned to "+u.displayName},...(t.activity||[])]; t.updatedAt=now(); try{ await db.saveTicket(t); }catch(e){} toast(`${t.ref} assigned to you`); close(); renderShell(); };
+    atm.onclick=async()=>{ atm.disabled=true; t.assigneeId=u.id; t.assigneeName=u.displayName; if(t.status==="new"||t.status==="pending_approval"||!t.status){/* leave workflow status as-is */} t.activity=[{at:now(),by:u.id,byName:u.displayName,text:"Assigned to "+u.displayName},...(t.activity||[])]; t.updatedAt=now(); try{ await db.saveTicket(t); toast(`${t.ref} assigned to you`); close(); renderShell(); }catch(e){ toast(e.message); atm.disabled=false; } };
     foot.appendChild(atm);
   }
   if(mayApprove){
@@ -1710,7 +1718,7 @@ function editTicketModal(t,after){
   const catS=$("#cat",ov), typS=$("#typ",ov), prioS=$("#prio",ov), rprev=$("#rprev",ov);
   const fillTypes=()=>{ const ts=typesForCat(catS.value); typS.innerHTML=ts.map(x=>`<option ${x===t.type?"selected":""}>${esc(x)}</option>`).join(""); };
   const refresh=()=>{ const m=matrixFor(catS.value,typS.value);
-    if(m){ rprev.innerHTML=`Routing: <b>${esc(m.dept)}</b>${m.approvers.length?" · Approvers: "+m.approvers.map(r=>esc(ROLE_LABEL[r]||r)).join(", "):" · No approval"} · Priority: <b>${esc(m.priority||"Medium")}</b>`; prioS.value=m.priority||"Medium"; }
+    if(m){ rprev.innerHTML=`Routing: <b>${esc(m.dept)}</b>${m.approvers.length?" · Approvers: "+m.approvers.map(r=>esc(ROLE_LABEL[r]||r)).join(", "):" · No approval"}`; if(m.priority) prioS.value=m.priority; }
     else rprev.innerHTML='<span class="muted">—</span>'; };
   fillTypes(); refresh();
   catS.onchange=()=>{ fillTypes(); refresh(); };
@@ -1742,26 +1750,13 @@ function editTicketModal(t,after){
     if(willEmail){ try{ await queueApprovalEmails(t); }catch(_){} }
     toast(willEmail?`${t.ref} updated — approval email sent`:`${t.ref} updated`); close(); after&&after(); renderShell();};
 }
-async function claimAssignee(ticketId, assigneeId, assigneeName){
-  if(!db.isFirebase()){ return {ok:true}; }
-  try{
-    return await fb.fsMod.runTransaction(fb.dbf, async(tx)=>{
-      const ref=fb.fsMod.doc(fb.dbf,"tickets",ticketId);
-      const s=await tx.get(ref); if(!s.exists()) return {ok:false, name:"(missing)"};
-      const cur=s.data();
-      if(assigneeId && cur.assigneeId && cur.assigneeId!==assigneeId) return {ok:false, name:cur.assigneeName||"someone else"};
-      tx.update(ref, {assigneeId:assigneeId||"", assigneeName:assigneeName||"", updatedAt:now()});
-      return {ok:true};
-    });
-  }catch(e){ return {ok:false, name:"(error)", err:e.message}; }
-}
 function assignModal(t,after){
   const root=$("#modal-root"); const staff=state.users.filter(u=>u.role!=="agent");
   const ov=el(`<div class="overlay"><div class="modal" style="max-width:460px"><div style="display:flex;justify-content:space-between"><h3>Assign ${esc(t.ref)}</h3><button class="close-x" id="mx">✕</button></div>
     <div class="field"><label>Assignee (${esc(t.department||"team")})</label><select id="as"><option value="">— unassigned —</option>${staff.map(x=>`<option value="${x.id}" ${x.id===t.assigneeId?"selected":""}>${esc(x.displayName)} (${ROLE_LABEL[x.role]})</option>`).join("")}</select></div>
     <div class="modal-foot"><button class="btn" id="c">Cancel</button><button class="btn primary" id="s">Save</button></div></div></div>`);
   root.appendChild(ov); const close=()=>ov.remove(); $("#mx",ov).onclick=close;$("#c",ov).onclick=close;ov.onclick=e=>{if(e.target===ov)close();};
-  $("#s",ov).onclick=async()=>{const id=$("#as",ov).value;const who=staff.find(x=>x.id===id); if(id && t.assigneeId && t.assigneeId!==id){ toast("Already assigned to "+(t.assigneeName||"someone else")+" — unassign first."); return; } const res=await claimAssignee(t.id, id, who?who.displayName:""); if(!res.ok){ toast("Could not assign — "+res.name+" got it first."); close(); after&&after(); renderShell(); return; } t.assigneeId=id;t.assigneeName=who?who.displayName:"";t.activity.unshift({at:now(),by:state.user.id,byName:state.user.displayName,text:who?"Assigned to "+who.displayName:"Unassigned"});t.updatedAt=now(); try{ await db.saveTicket(t); }catch(e){} toast("Assignee updated");close();after&&after();renderShell();};
+  $("#s",ov).onclick=async()=>{const id=$("#as",ov).value;const who=staff.find(x=>x.id===id);t.assigneeId=id;t.assigneeName=who?who.displayName:"";t.activity.unshift({at:now(),by:state.user.id,byName:state.user.displayName,text:who?"Assigned to "+who.displayName:"Unassigned"});t.updatedAt=now();await db.saveTicket(t);toast("Assignee updated");close();after&&after();renderShell();};
 }
 function rerouteModal(t,after){
   const root=$("#modal-root"); const sug=(t.attachments||[]).map(a=>a.analysis&&a.analysis.suggestedDept).find(Boolean)||"";
