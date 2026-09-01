@@ -1101,6 +1101,14 @@ async function drainInbox(){
       }catch(err){ console.error("Reply attach failed:",err); }
       continue;
     }
+    // Cross-browser guard: claim this EMAIL's identity so two open accounts can't each create a ticket
+    { const subjKey2=(subj||"").trim().toLowerCase().slice(0,120);
+      const emailKey=(mid||conv||((from||"").toLowerCase()+"|"+subjKey2)).replace(/[^a-zA-Z0-9]/g,"").slice(0,140);
+      if(emailKey){ let ew=false;
+        try{ await fb.fsMod.runTransaction(fb.dbf, async(tx)=>{ const cref=fb.fsMod.doc(fb.dbf,"claims",emailKey); const s=await tx.get(cref); if(s.exists()) return; tx.set(cref,{at:now()}); ew=true; }); }catch(_){ ew=false; }
+        if(!ew) continue; // another open account is already creating this ticket
+      }
+    }
     // create a brand-new ticket
     try{
       const nt=await db.createTicket({ subject:(e.subject||"Email request").toString().slice(0,120),
