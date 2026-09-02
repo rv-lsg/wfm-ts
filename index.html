@@ -1083,6 +1083,21 @@ async function drainInbox(){
         if(already) action="discard";
       }
     }
+    if(window.__intakeDebug){ console.log("[intake]", d.id, { subject:subj.slice(0,50), hasMessageId:!!mid, hasConversationId:!!conv, isAuto, isOwnMail, isReply, matchedExistingTicket:!!matchTicket, ACTION:action }); }
+    // ---- Cross-browser email dedupe (SAFE: before inbox delete, fail-open) ----
+    if(action==="create"){
+      const subjKeyC=(subj||"").trim().toLowerCase().slice(0,120);
+      const emailKey=(mid||conv||((from||"").toLowerCase()+"|"+subjKeyC)).replace(/[^a-zA-Z0-9]/g,"").slice(0,140);
+      if(emailKey){
+        let decision="won";
+        try{ decision=await fb.fsMod.runTransaction(fb.dbf, async(tx)=>{ const cref=fb.fsMod.doc(fb.dbf,"claims",emailKey); const s=await tx.get(cref); if(s.exists()) return "dup"; tx.set(cref,{at:now()}); return "won"; }); }
+        catch(e){ decision="won"; } // FAIL-OPEN: a claims error must never block ticket creation
+        if(decision==="dup"){ // a genuine duplicate is already handled elsewhere → remove this inbox copy and skip
+          try{ await fb.fsMod.deleteDoc(fb.fsMod.doc(fb.dbf,"inbox",d.id)); }catch(_){}
+          continue;
+        }
+      }
+    }
     // ---- CLAIM the inbox doc atomically: only ONE browser can win, others skip ----
     let won=false;
     try{
@@ -1100,14 +1115,6 @@ async function drainInbox(){
         await db.saveTicket(matchTicket); rn++;
       }catch(err){ console.error("Reply attach failed:",err); }
       continue;
-    }
-    // Cross-browser guard: claim this EMAIL's identity so two open accounts can't each create a ticket
-    { const subjKey2=(subj||"").trim().toLowerCase().slice(0,120);
-      const emailKey=(mid||conv||((from||"").toLowerCase()+"|"+subjKey2)).replace(/[^a-zA-Z0-9]/g,"").slice(0,140);
-      if(emailKey){ let ew=false;
-        try{ await fb.fsMod.runTransaction(fb.dbf, async(tx)=>{ const cref=fb.fsMod.doc(fb.dbf,"claims",emailKey); const s=await tx.get(cref); if(s.exists()) return; tx.set(cref,{at:now()}); ew=true; }); }catch(_){ ew=false; }
-        if(!ew) continue; // another open account is already creating this ticket
-      }
     }
     // create a brand-new ticket
     try{
