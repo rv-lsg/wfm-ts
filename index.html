@@ -588,7 +588,7 @@ const DEFAULT_SETTINGS = {
   priorities:["Low","Medium","High","Urgent"],
   labels:["urgent","client-impact","payroll-lock","compliance","after-hours"],
   departments:[...new Set(DEFAULT_MATRIX.map(m=>m.dept))],
-  sla:{Low:72,Medium:48,High:24,Urgent:8}, defaultTheme:"dark", webhookUrl:"", approvalSendUrl:"", approvalDecisionUrl:"", replyFlowUrl:"", intake:{category:"",type:"",priority:"Medium"}
+  sla:{Low:72,Medium:48,High:24,Urgent:8}, defaultTheme:"dark", autoAssign:false, webhookUrl:"", approvalSendUrl:"", approvalDecisionUrl:"", replyFlowUrl:"", intake:{category:"",type:"",priority:"Medium"}
 };
 
 /* ============================ ROUTING / APPROVAL ENGINE (pure) ============================ */
@@ -1047,6 +1047,31 @@ window.purgeEmailDupes = async function(){
   try{ toast("Removed "+del+" duplicate email tickets"); renderShell(); }catch(_){}
   return del;
 };
+async function autoAssignTickets(){
+  if(!db.isFirebase() || !state.user) return;
+  if(!(state.settings && state.settings.autoAssign)) return;
+  let tickets, users;
+  try{ tickets=(await db.listTickets())||[]; users=(state.users&&state.users.length)?state.users:await db.listUsers(); }catch(_){ return; }
+  const activeWfm = users.filter(u=>u.role==="wfm" && (u.status?u.status==="active":true) && isActive(u));
+  if(!activeWfm.length) return; // presence-aware: nobody online to receive work
+  const TERM=["resolved","closed","rejected","cancelled"];
+  const load={}; activeWfm.forEach(u=>load[u.id]=0);
+  tickets.forEach(t=>{ if(t.assigneeId && load[t.assigneeId]!=null && !TERM.includes(t.status)) load[t.assigneeId]++; });
+  const assignable = tickets
+    .filter(t=>!t.assigneeId && !TERM.includes(t.status) && t.status!=="pending_approval")
+    .sort((a,b)=>String(a.createdAt||"").localeCompare(String(b.createdAt||""))); // oldest first
+  for(const t of assignable){
+    let pick=activeWfm[0]; for(const u of activeWfm){ if(load[u.id] < load[pick.id]) pick=u; }
+    try{ const res=await claimAssignee(t.id, pick.id, pick.displayName); if(res && res.ok){ load[pick.id]++; } }catch(_){}
+  }
+}
+function refreshCurrentView(){
+  const shell=document.getElementById("shell"); if(!shell) return;
+  const view=document.getElementById("view"); if(!view) return;
+  if(document.querySelector(".overlay")) return;              // don't yank a view out from under an open modal
+  if(document.getElementById("floatmenu")) return;
+  ({dashboard:viewDashboard,board:viewBoard,tickets:viewTickets,approvals:viewApprovals,contacts:viewContacts}[state.tab]||(()=>{}))(view);
+}
 async function drainInbox(){
   if(!db.isFirebase()||!state.user) return;
   if(window.__draining) return; window.__draining=true;
@@ -1090,8 +1115,9 @@ async function drainInbox(){
       const emailKey=(mid||conv||((from||"").toLowerCase()+"|"+subjKeyC)).replace(/[^a-zA-Z0-9]/g,"").slice(0,140);
       if(emailKey){
         let decision="won";
-        try{ decision=await fb.fsMod.runTransaction(fb.dbf, async(tx)=>{ const cref=fb.fsMod.doc(fb.dbf,"claims",emailKey); const s=await tx.get(cref); if(s.exists()) return "dup"; tx.set(cref,{at:now()}); return "won"; }); }
+        try{ decision=await fb.fsMod.runTransaction(fb.dbf, async(tx)=>{ const cref=fb.fsMod.doc(fb.dbf,"claims",emailKey); const s=await tx.get(cref); if(s.exists()){ const at=s.data().at; const ms=Date.parse(typeof at==="string"?at:"")||0; if(ms && (Date.now()-ms)<120000) return "dup"; } tx.set(cref,{at:now()}); return "won"; }); }
         catch(e){ decision="won"; } // FAIL-OPEN: a claims error must never block ticket creation
+        if(window.__intakeDebug){ console.log("[intake] claims-guard decision:", decision, "key:", emailKey); }
         if(decision==="dup"){ // a genuine duplicate is already handled elsewhere → remove this inbox copy and skip
           try{ await fb.fsMod.deleteDoc(fb.fsMod.doc(fb.dbf,"inbox",d.id)); }catch(_){}
           continue;
@@ -1103,6 +1129,7 @@ async function drainInbox(){
     try{
       await fb.fsMod.runTransaction(fb.dbf, async(tx)=>{ const dref=fb.fsMod.doc(fb.dbf,"inbox",d.id); const s=await tx.get(dref); if(!s.exists()) return; tx.delete(dref); won=true; });
     }catch(_){ won=false; }
+    if(window.__intakeDebug){ console.log("[intake] inbox-claim won:", won, "id:", d.id); }
     if(!won) continue; // another active user already handled this email
     // ---- ACT (the inbox doc is already removed; no re-processing possible) ----
     if(action==="discard") continue;
@@ -1117,6 +1144,7 @@ async function drainInbox(){
       continue;
     }
     // create a brand-new ticket
+    if(window.__intakeDebug){ console.log("[intake] -> creating ticket for", (e.from||""), "cat/type:", cat, type); }
     try{
       const nt=await db.createTicket({ subject:(e.subject||"Email request").toString().slice(0,120),
         description:(cleanEmailBody(e.body)||"")+(e.from?("\n\n— From: "+e.from):""),
@@ -1133,7 +1161,8 @@ async function drainInbox(){
       allT.push({emailMessageId:mid, conversationId:conv, requesterId:"email-intake", requesterEmail:(e.from||"").toString(), subject:nt.subject});
       n++;
     }catch(err){
-      console.error("Email intake create failed — re-queueing email:",err);
+      console.error("Email intake CREATE FAILED:",err, "| ticket data:", {cat,type,from});
+      toast("Ticket create failed: "+((err&&err.message)||err));
       try{ await fb.fsMod.addDoc(fb.fsMod.collection(fb.dbf,"inbox"), e); }catch(_){}   // put it back so it isn't lost
     }
   }
@@ -1141,7 +1170,9 @@ async function drainInbox(){
   } finally { window.__draining=false; }
 }
 
-function startPresence(){ if(window.__hb) clearInterval(window.__hb); try{db.heartbeat();}catch(e){} try{drainDecisions();}catch(e){} try{drainInbox();}catch(e){} window.__hb=setInterval(()=>{ try{ drainDecisions(); }catch(e){} if(document.hidden) return; try{db.heartbeat();}catch(e){} try{drainInbox();}catch(e){}},45000); }
+function startPresence(){ if(window.__hb) clearInterval(window.__hb); try{db.heartbeat();}catch(e){} try{drainDecisions();}catch(e){} try{drainInbox();}catch(e){} window.__hb=setInterval(()=>{ try{ drainDecisions(); }catch(e){} if(document.hidden) return; try{db.heartbeat();}catch(e){} try{drainInbox();}catch(e){} try{autoAssignTickets();}catch(e){}},45000);
+  if(window.__live) clearInterval(window.__live);
+  window.__live=setInterval(()=>{ if(document.hidden) return; if(!["board","tickets","dashboard"].includes(state.tab)) return; try{ refreshCurrentView(); }catch(e){} }, 12000); }
 
 /* ---- tiny SVG charts ---- */
 function donut(pairs){ const total=Math.max(1,pairs.reduce((s,p)=>s+p.value,0)),r=52,c=2*Math.PI*r; let off=0,segs="";
@@ -1971,7 +2002,14 @@ async function viewSettings(root){
     $("#ac",c).oninput=e=>{s.accent=e.target.value;document.documentElement.style.setProperty("--accent",e.target.value);};
     $("#th",c).onchange=e=>{s.defaultTheme=e.target.value;applyTheme(e.target.value);};
   }
-  function secWorkflow(r){ r.appendChild(listEditor("PRIORITY LEVELS",s.priorities,a=>s.priorities=a)); r.appendChild(listEditor("LABELS",s.labels,a=>s.labels=a)); }
+  function secWorkflow(r){
+    const aa=el(`<div class="card" style="max-width:700px;margin-bottom:16px"><div class="code muted" style="margin-bottom:6px">AUTO-ASSIGNMENT · ROUND ROBIN</div>
+      <div class="muted" style="font-size:12px;margin-bottom:12px">When on, unassigned tickets are automatically distributed to <b>online WFM analysts</b> (oldest ticket first, balanced by current workload). Analysts still can't have a ticket stolen once it's theirs.</div>
+      <label style="display:flex;gap:10px;align-items:center;font-size:14px;cursor:pointer"><input type="checkbox" id="autoassign" ${s.autoAssign?"checked":""}/> Enable round-robin auto-assignment to online WFM analysts</label></div>`);
+    r.appendChild(aa);
+    $("#autoassign",aa).onchange=e=>{ s.autoAssign=e.target.checked; };
+    r.appendChild(listEditor("PRIORITY LEVELS",s.priorities,a=>s.priorities=a)); r.appendChild(listEditor("LABELS",s.labels,a=>s.labels=a));
+  }
   function secSLA(r){
     const c=el(`<div class="card" style="max-width:700px"><div class="code muted" style="margin-bottom:6px">SLA TARGETS · HOURS TO DUE</div>
       <div class="muted" style="font-size:12px;margin-bottom:14px">New tickets get a due date automatically from their priority (unless the requester picks one). Overdue tickets flag red on the board and lists. Leave blank for no auto-due.</div>
