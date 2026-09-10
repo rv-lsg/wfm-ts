@@ -485,6 +485,14 @@
   .cmt-text{white-space:pre-wrap;word-break:break-word}
   .icon-btn.spin{animation:spin360 .5s linear}
   @keyframes spin360{from{transform:rotate(0)}to{transform:rotate(360deg)}}
+  .switch-row{display:flex;align-items:center;gap:14px;font-size:14px;cursor:pointer;margin:6px 0}
+  .switch-row .lbl{flex:1;line-height:1.35}
+  .switch{position:relative;display:inline-block;width:46px;height:26px;flex:0 0 46px}
+  .switch input{opacity:0;width:0;height:0;position:absolute}
+  .switch .sl{position:absolute;inset:0;background:var(--line);border-radius:26px;transition:background .2s}
+  .switch .sl:before{content:"";position:absolute;height:20px;width:20px;left:3px;top:3px;background:#fff;border-radius:50%;transition:transform .2s;box-shadow:0 1px 3px rgba(0,0,0,.35)}
+  .switch input:checked + .sl{background:var(--green)}
+  .switch input:checked + .sl:before{transform:translateX(20px)}
 </style>
 </head>
 <body>
@@ -2074,14 +2082,14 @@ async function viewSettings(root){
   function secWorkflow(r){
     const aa=el(`<div class="card" style="max-width:700px;margin-bottom:16px"><div class="code muted" style="margin-bottom:6px">AUTO-ASSIGNMENT · ROUND ROBIN</div>
       <div class="muted" style="font-size:12px;margin-bottom:12px">When on, unassigned tickets are automatically distributed to <b>online WFM analysts</b> (oldest ticket first, balanced by current workload). Analysts still can't have a ticket stolen once it's theirs.</div>
-      <label style="display:flex;gap:10px;align-items:center;font-size:14px;cursor:pointer"><input type="checkbox" id="autoassign" ${s.autoAssign?"checked":""}/> Enable round-robin auto-assignment to online WFM analysts</label></div>`);
+      <label class="switch-row"><span class="switch"><input type="checkbox" id="autoassign" ${s.autoAssign?"checked":""}/><span class="sl"></span></span><span class="lbl">Enable round-robin auto-assignment to online WFM analysts</span></label></div>`);
     r.appendChild(aa);
     $("#autoassign",aa).onchange=e=>{ s.autoAssign=e.target.checked; };
     const esc2=el(`<div class="card" style="max-width:700px;margin-bottom:16px"><div class="code muted" style="margin-bottom:6px">ESCALATION</div>
       <div class="muted" style="font-size:12px;margin-bottom:12px">Anyone can escalate a ticket manually at any time. Automatic escalation (below) sends tickets past their SLA due date to your <b>WFM Manager</b> (then WFM Director).</div>
-      <label style="display:flex;gap:10px;align-items:center;font-size:14px;cursor:pointer;margin-bottom:8px"><input type="checkbox" id="autoesc" ${s.autoEscalate?"checked":""}/> Enable automatic escalation on SLA breach</label>
+      <label class="switch-row"><span class="switch"><input type="checkbox" id="autoesc" ${s.autoEscalate?"checked":""}/><span class="sl"></span></span><span class="lbl">Enable automatic escalation on SLA breach</span></label>
       <div class="field" style="margin-bottom:8px"><label>Automatic escalation goes to team</label><select id="autoescteam" style="max-width:320px"><option value="">— manual only (do not auto-route) —</option>${(s.teams||[]).map(t=>`<option ${t===s.autoEscalateTeam?"selected":""}>${esc(t)}</option>`).join("")}</select></div>
-      <label style="display:flex;gap:10px;align-items:center;font-size:14px;cursor:pointer"><input type="checkbox" id="escbump" ${s.escalateBumpPriority?"checked":""}/> On automatic escalation, also bump priority one level (max Urgent)</label></div>`);
+      <label class="switch-row"><span class="switch"><input type="checkbox" id="escbump" ${s.escalateBumpPriority?"checked":""}/><span class="sl"></span></span><span class="lbl">On automatic escalation, also bump priority one level (max Urgent)</span></label></div>`);
     r.appendChild(esc2);
     $("#autoesc",esc2).onchange=e=>{ s.autoEscalate=e.target.checked; };
     $("#autoescteam",esc2).onchange=e=>{ s.autoEscalateTeam=e.target.value; };
