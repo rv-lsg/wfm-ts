@@ -518,8 +518,8 @@ function emailAllowed(e){ return !ALLOWED_EMAIL_DOMAIN || (e||"").toLowerCase().
 const SEED_ADMIN = { email:"admin@wfm.local", password:"wfm2026", displayName:"WFM Admin", role:"admin", site:"MNL", lob:"WFM" };
 const AI_KEY = "crm_ai_cfg";
 
-const ROLES = ["agent","tl","wfm","opm","opd","hr","admin"];
-const ROLE_LABEL = { agent:"Requester / Employee", tl:"Team Lead", wfm:"WFM Analyst", opm:"Ops Manager", opd:"Ops Director", hr:"HR Manager", admin:"Admin" };
+const ROLES = ["agent","tl","wfm","opm","opd","wfm_manager","wfm_director","hr","admin"];
+const ROLE_LABEL = { agent:"Requester / Employee", tl:"Team Lead", wfm:"WFM Analyst", opm:"Ops Manager", opd:"Ops Director", wfm_manager:"WFM Manager", wfm_director:"WFM Director", hr:"HR Manager", admin:"Admin" };
 const APPROVER_ROLES = ["tl","wfm","opm","opd","hr"];
 
 /* Lifecycle (from spec). Board shows the first 7 in order. */
@@ -588,7 +588,7 @@ const DEFAULT_SETTINGS = {
   priorities:["Low","Medium","High","Urgent"],
   labels:["urgent","client-impact","payroll-lock","compliance","after-hours"],
   departments:[...new Set(DEFAULT_MATRIX.map(m=>m.dept))],
-  sla:{Low:72,Medium:48,High:24,Urgent:8}, defaultTheme:"dark", autoAssign:false, webhookUrl:"", approvalSendUrl:"", approvalDecisionUrl:"", replyFlowUrl:"", intake:{category:"",type:"",priority:"Medium"}
+  sla:{Low:72,Medium:48,High:24,Urgent:8}, defaultTheme:"dark", autoAssign:false, autoEscalate:false, escalateBumpPriority:false, teams:["L1 - General","L2 - Forecasting"], newTicketTeam:"", autoEscalateTeam:"", webhookUrl:"", approvalSendUrl:"", approvalDecisionUrl:"", replyFlowUrl:"", intake:{category:"",type:"",priority:"Medium"}
 };
 
 /* ============================ ROUTING / APPROVAL ENGINE (pure) ============================ */
@@ -1047,6 +1047,44 @@ window.purgeEmailDupes = async function(){
   try{ toast("Removed "+del+" duplicate email tickets"); renderShell(); }catch(_){}
   return del;
 };
+function bumpPriority(p){ const order=["Low","Medium","High","Urgent"]; const i=order.indexOf(p); return (i>=0 && i<order.length-1)?order[i+1]:p; }
+function teamMembers(team){ return (state.users||[]).filter(u=>u.role==="wfm" && u.team===team && (u.status?u.status==="active":true) && u.email); }
+async function applyEscalation(t, byUser, reason, doBump, team){
+  const targetTeam = team || t.team || "";
+  const people = targetTeam ? teamMembers(targetTeam) : [];
+  t.status="escalated";
+  if(doBump) t.priority=bumpPriority(t.priority);
+  t.escalatedAt=now(); t.escalatedTeam=targetTeam;
+  t.activity=[{at:now(), by:(byUser?byUser.id:"system"), byName:(byUser?byUser.displayName:"Auto (SLA)"), text:`Escalated${targetTeam?" to "+targetTeam:""}`+(reason?": "+reason:"")+(doBump?` · priority → ${t.priority}`:"")}, ...(t.activity||[])];
+  t.updatedAt=now();
+  try{ await db.saveTicket(t); }catch(e){}
+  const sendUrl=(state.settings&&state.settings.approvalSendUrl)||"";
+  if(sendUrl && people.length){
+    const html=`<div style="font-family:Segoe UI,Arial,sans-serif;max-width:560px"><h2 style="margin:0 0 6px">Ticket escalated</h2>
+      <p style="color:#555">${esc(t.ref)} — ${esc(t.subject||"")}</p>
+      <table style="font-size:14px"><tr><td style="color:#888;padding:2px 8px 2px 0">Priority</td><td>${esc(t.priority)}</td></tr>
+      <tr><td style="color:#888;padding:2px 8px 2px 0">Type</td><td>${esc(t.type||"—")}</td></tr>
+      <tr><td style="color:#888;padding:2px 8px 2px 0">Reason</td><td>${esc(reason||"SLA breach")}</td></tr></table></div>`;
+    for(const p of people){
+      try{ fetch(sendUrl,{method:"POST",mode:"no-cors",headers:{"Content-Type":"text/plain;charset=utf-8"},body:JSON.stringify({to:p.email,subject:`Escalated — ${t.ref}: ${t.subject||""}`,html})}).catch(()=>{}); }catch(_){}
+    }
+  }
+  return {team:targetTeam, people};
+}
+async function autoEscalateTickets(){
+  if(!db.isFirebase() || !state.user) return;
+  if(!(state.settings && state.settings.autoEscalate)) return; // auto-escalation off = do nothing (manual still works)
+  let tickets; try{ tickets=(await db.listTickets())||[]; }catch(_){ return; }
+  const doBump = !!(state.settings && state.settings.escalateBumpPriority);
+  const autoTeam=(state.settings&&state.settings.autoEscalateTeam)||"";
+  if(!autoTeam) return; // no default team set = auto-escalation routes to nobody; treat as manual-only
+  for(const t of tickets){
+    if(t.escalatedAt) continue;                          // fire once only
+    if(!overdue(t)) continue;                             // uses the ticket's CURRENT due (respects re-categorization)
+    if(["escalated","resolved","closed","cancelled","rejected","pending_approval"].includes(t.status)) continue;
+    await applyEscalation(t, null, "Automatic escalation — SLA breach", doBump, (state.settings&&state.settings.autoEscalateTeam)||"");
+  }
+}
 async function autoAssignTickets(){
   if(!db.isFirebase() || !state.user) return;
   if(!(state.settings && state.settings.autoAssign)) return;
@@ -1150,7 +1188,7 @@ async function drainInbox(){
         description:(cleanEmailBody(e.body)||"")+(e.from?("\n\n— From: "+e.from):""),
         category:cat, type:type, priority:prio, labels:["email"],
         requesterId:"email-intake", requesterName:(e.from||"Email intake").toString(), requesterEmail:(e.from||"").toString(),
-        site:"", lob:"", attachments:[] });
+        site:"", lob:"", attachments:[], team:((state.settings&&state.settings.newTicketTeam)||"") });
       nt.cc=splitEmails(e.cc); nt.emailMessageId=mid; nt.conversationId=conv;
       let users=[]; try{ users=(state.users&&state.users.length)?state.users:await db.listUsers(); }catch(_){}
       for(const email of nt.cc){ const acc=users.find(u=>(u.email||"").toLowerCase()===email && APPROVER_ROLES.includes(u.role) && (u.status?u.status==="active":true));
@@ -1170,7 +1208,7 @@ async function drainInbox(){
   } finally { window.__draining=false; }
 }
 
-function startPresence(){ if(window.__hb) clearInterval(window.__hb); try{db.heartbeat();}catch(e){} try{drainDecisions();}catch(e){} try{drainInbox();}catch(e){} window.__hb=setInterval(()=>{ try{ drainDecisions(); }catch(e){} if(document.hidden) return; try{db.heartbeat();}catch(e){} try{drainInbox();}catch(e){} try{autoAssignTickets();}catch(e){}},45000);
+function startPresence(){ if(window.__hb) clearInterval(window.__hb); try{db.heartbeat();}catch(e){} try{drainDecisions();}catch(e){} try{drainInbox();}catch(e){} window.__hb=setInterval(()=>{ try{ drainDecisions(); }catch(e){} if(document.hidden) return; try{db.heartbeat();}catch(e){} try{drainInbox();}catch(e){} try{autoAssignTickets();}catch(e){} try{autoEscalateTickets();}catch(e){}},45000);
   if(window.__live) clearInterval(window.__live);
   window.__live=setInterval(()=>{ if(document.hidden) return; if(!["board","tickets","dashboard"].includes(state.tab)) return; try{ refreshCurrentView(); }catch(e){} }, 12000); }
 
@@ -1439,6 +1477,7 @@ async function buildNotifications(u){
   const out=[]; const seen=new Set();
   all.forEach(t=>{ if(canApprove(u,t)){ out.push({text:`${t.ref} awaits your approval`,ticketId:t.id,at:t.updatedAt}); seen.add(t.id);} });
   all.forEach(t=>{ if(t.assigneeId===u.id && overdue(t) && !seen.has(t.id)){ out.push({text:`${t.ref} is overdue`,ticketId:t.id,at:t.updatedAt}); seen.add(t.id);} });
+  all.forEach(t=>{ if(t.status==="escalated" && t.escalatedTeam && t.escalatedTeam===u.team && !seen.has(t.id)){ out.push({text:`${t.ref} escalated to your team`,ticketId:t.id,at:t.updatedAt}); seen.add(t.id);} });
   all.forEach(t=>{ if(t.requesterId===u.id && ["resolved","approved","denied"].includes(t.status) && !seen.has(t.id)){ out.push({text:`${t.ref} was ${STATUS[t.status]?STATUS[t.status].label:t.status}`,ticketId:t.id,at:t.updatedAt}); seen.add(t.id);} });
   if(u.role==="admin"){ try{ const us=await db.listUsers(); us.filter(x=>x.status==="pending").forEach(x=>out.push({text:(x.displayName||x.email)+" requests access",ticketId:"__accounts__",at:now()})); }catch(e){} }
   out.sort((a,b)=>a.at<b.at?1:-1); return out.slice(0,12);
@@ -1692,6 +1731,29 @@ async function openTicket(id, opts){
       eb.disabled=true; try{ await queueApprovalEmails(t,true); toast("Approval email(s) sent"); }catch(e){ toast(e.message); } eb.disabled=false; };
     foot.appendChild(eb);
   }
+  // Escalate — available to anyone; ladder resolves in escalationTarget()
+  if(!readonly && !["resolved","closed","cancelled","rejected","pending_approval"].includes(t.status)){
+    const esb=el(`<button class="btn danger">▲ Escalate</button>`);
+    esb.onclick=()=>{
+      const root2=$("#modal-root");
+      const teams=(state.settings.teams||[]);
+      const ov2=el(`<div class="overlay"><div class="modal" style="max-width:460px"><div style="display:flex;justify-content:space-between"><h3>Escalate ${esc(t.ref)}</h3><button class="close-x" id="mx2">✕</button></div>
+        <div class="muted" style="font-size:12px;margin:6px 0 12px">Send this ticket to a WFM team. Everyone on that team is notified.</div>
+        <div class="field"><label>Escalate to team *</label><select id="eteam"><option value="">— choose a team —</option>${teams.map(tm=>`<option ${tm===t.team?"selected":""}>${esc(tm)}</option>`).join("")}</select></div>
+        <div class="field"><label>Reason *</label><textarea id="ereason" placeholder="Why does this need escalating?"></textarea></div>
+        <label style="display:flex;gap:8px;align-items:center;font-size:13px;margin:6px 0 4px"><input type="checkbox" id="ebump"/> Bump priority one level (max Urgent)</label>
+        <div class="modal-foot"><button class="btn" id="ec">Cancel</button><button class="btn danger" id="ego">Escalate</button></div></div></div>`);
+      root2.appendChild(ov2); const cl=()=>ov2.remove(); $("#mx2",ov2).onclick=cl;$("#ec",ov2).onclick=cl;ov2.onclick=e=>{if(e.target===ov2)cl();};
+      $("#ego",ov2).onclick=async()=>{ const team=$("#eteam",ov2).value; const reason=$("#ereason",ov2).value.trim();
+        if(!team){ toast("Choose a team to escalate to."); return; }
+        if(!reason){ toast("A reason is required to escalate."); return; }
+        $("#ego",ov2).disabled=true;
+        await applyEscalation(t, u, reason, $("#ebump",ov2).checked, team);
+        toast(`${t.ref} escalated to ${team}`); cl(); close(); renderShell();
+      };
+    };
+    foot.appendChild(esb);
+  }
   // Assign to me — available to any account
   if(!readonly){
     const mine = t.assigneeId===u.id;
@@ -1916,17 +1978,18 @@ async function viewAccounts(root){
     <div class="row-2"><div class="field"><label>Full name</label><input id="n"/></div><div class="field"><label>Email</label><input id="e" type="email"/></div></div>
     <div class="row-3"><div class="field"><label>Role</label><select id="r">${ROLES.map(r=>`<option value="${r}">${ROLE_LABEL[r]}</option>`).join("")}</select></div>
       <div class="field"><label>Site</label><input id="s" placeholder="MNL"/></div><div class="field"><label>Temp password</label><input id="p" type="text" value="wfm2026"/></div></div>
-    <div class="field"><label>LOB / Account</label><input id="l" placeholder="OnTrac"/></div>
+    <div class="row-2"><div class="field"><label>LOB / Account</label><input id="l" placeholder="OnTrac"/></div>
+    <div class="field"><label>Team (WFM)</label><select id="tm"><option value="">— none —</option>${(state.settings.teams||[]).map(t=>`<option>${esc(t)}</option>`).join("")}</select></div></div>
     <button class="btn primary" id="go">Create account</button></div>`);
   root.appendChild(form);
-  $("#go",form).onclick=async()=>{const n=$("#n",form).value.trim(),e=$("#e",form).value.trim(),r=$("#r",form).value,p=$("#p",form).value,s=$("#s",form).value.trim(),l=$("#l",form).value.trim(),m=$("#m",form);if(!n||!e||p.length<6){m.innerHTML=`<div class="msg err">Name, email, and 6+ char password required.</div>`;return;} if(!emailAllowed(e)){m.innerHTML=`<div class="msg err">Access is limited to @${esc(ALLOWED_EMAIL_DOMAIN)} accounts.</div>`;return;} $("#go",form).disabled=true;try{const acct=await db.createAccount({email:e,password:p,displayName:n,role:"agent",site:s,lob:l,status:"pending"}); if(acct&&acct.id) await db.updateUser(acct.id,{role:r,status:"active"}); m.innerHTML=`<div class="msg ok">Account created for ${esc(n)} (${ROLE_LABEL[r]||r}, active).</div>`;viewAccounts(root);}catch(x){m.innerHTML=`<div class="msg err">${esc(x.message)}</div>`;const b=$("#go",form);if(b)b.disabled=false;}};
+  $("#go",form).onclick=async()=>{const n=$("#n",form).value.trim(),e=$("#e",form).value.trim(),r=$("#r",form).value,p=$("#p",form).value,s=$("#s",form).value.trim(),l=$("#l",form).value.trim(),tm=($("#tm",form)?$("#tm",form).value:""),m=$("#m",form);if(!n||!e||p.length<6){m.innerHTML=`<div class="msg err">Name, email, and 6+ char password required.</div>`;return;} if(!emailAllowed(e)){m.innerHTML=`<div class="msg err">Access is limited to @${esc(ALLOWED_EMAIL_DOMAIN)} accounts.</div>`;return;} $("#go",form).disabled=true;try{const acct=await db.createAccount({email:e,password:p,displayName:n,role:"agent",site:s,lob:l,status:"pending"}); if(acct&&acct.id) await db.updateUser(acct.id,{role:r,status:"active",team:tm}); m.innerHTML=`<div class="msg ok">Account created for ${esc(n)} (${ROLE_LABEL[r]||r}, active).</div>`;viewAccounts(root);}catch(x){m.innerHTML=`<div class="msg err">${esc(x.message)}</div>`;const b=$("#go",form);if(b)b.disabled=false;}};
   $("#seed",root).onclick=async()=>{ if(!confirm("Create demo accounts (TL/OPM/OPD/HR + agent, password wfm2026)?"))return;
     const demo=[["Maria (TL)","tl@wfm.local","tl"],["JM (WFM)","wfm@wfm.local","wfm"],["Edmond (OPM)","opm@wfm.local","opm"],["Richard (OPD)","opd@wfm.local","opd"],["Grace (HR)","hr@wfm.local","hr"],["Sam (Agent)","agent@wfm.local","agent"]];
     for(const[n,e,r]of demo){try{const a=await db.createAccount({email:e,password:"wfm2026",displayName:n,role:"agent",site:"MNL",lob:"WFM",status:"pending"}); if(a&&a.id) await db.updateUser(a.id,{role:r,status:"active"});}catch(x){}} toast("Demo org created"); viewAccounts(root); };
     root.appendChild(el(`<div class="section-h"><h2>People (${users.length})</h2><div class="rule"></div></div>`));
-  const wrap=el(`<div class="table-wrap"><table><thead><tr><th>Name</th><th>Email</th><th>Site / LOB</th><th>Role</th><th>Reports to</th><th>Status</th><th></th></tr></thead><tbody></tbody></table></div>`);
+  const wrap=el(`<div class="table-wrap"><table><thead><tr><th>Name</th><th>Email</th><th>Site / LOB</th><th>Role</th><th>Team</th><th>Reports to</th><th>Status</th><th></th></tr></thead><tbody></tbody></table></div>`);
   const tb=$("tbody",wrap);
-  users.forEach(us=>{const tr=el(`<tr><td><span class="pdot ${isActive(us)?'online':'offline'}"></span>${esc(us.displayName||"—")}</td><td class="muted">${esc(us.email)}</td><td>${esc(us.site||"—")} / ${esc(us.lob||"—")}</td><td></td><td class="rtcell"></td><td class="stcell"></td><td><button class="btn sm ghost">Reset password</button></td></tr>`);
+  users.forEach(us=>{const tr=el(`<tr><td><span class="pdot ${isActive(us)?'online':'offline'}"></span>${esc(us.displayName||"—")}</td><td class="muted">${esc(us.email)}</td><td>${esc(us.site||"—")} / ${esc(us.lob||"—")}</td><td></td><td class="tmcell"></td><td class="rtcell"></td><td class="stcell"></td><td><button class="btn sm ghost">Reset password</button></td></tr>`);
     const sel=el(`<select style="width:auto">${ROLES.map(r=>`<option value="${r}" ${r===us.role?"selected":""}>${ROLE_LABEL[r]}</option>`).join("")}</select>`);
     sel.onchange=async()=>{await db.updateUser(us.id,{role:sel.value});toast(`${us.displayName} → ${ROLE_LABEL[sel.value]}`);viewAccounts(root);};
     if(us.id===state.user.id){sel.disabled=true;sel.title="You can't change your own role.";}
@@ -1939,6 +2002,12 @@ async function viewAccounts(root){
       rs.onchange=async()=>{ await db.updateUser(us.id,{reportsTo:rs.value||""}); toast(`${us.displayName||"User"} reports-to updated`); viewAccounts(root); };
       rtc.appendChild(rs);
     } else { rtc.innerHTML='<span class="muted">—</span>'; }
+    const tmc=$(".tmcell",tr);
+    if(us.role==="wfm"){ const teams=(state.settings.teams||[]);
+      const ts=el(`<select style="width:auto"><option value="">— none —</option>${teams.map(t=>`<option ${t===us.team?"selected":""}>${esc(t)}</option>`).join("")}</select>`);
+      ts.onchange=async()=>{ await db.updateUser(us.id,{team:ts.value||""}); toast(`${us.displayName||"User"} team updated`); viewAccounts(root); };
+      tmc.appendChild(ts);
+    } else { tmc.innerHTML='<span class="muted">—</span>'; }
     const _st=us.status||"active", _sc=$(".stcell",tr);
     if(_st==="pending"){ _sc.innerHTML='<span class="lbl" style="color:var(--amber);border-color:var(--amber)">pending</span> '; const ap=el('<button class="btn sm">Approve</button>'),dn=el('<button class="btn sm danger">Deny</button>'); ap.onclick=async()=>{await db.updateUser(us.id,{status:"active"});toast((us.displayName||us.email)+" approved");viewAccounts(root);}; dn.onclick=async()=>{await db.updateUser(us.id,{status:"denied"});toast((us.displayName||us.email)+" denied");viewAccounts(root);}; _sc.appendChild(ap); _sc.appendChild(dn); }
     else if(_st==="denied"){ _sc.innerHTML='<span class="lbl" style="color:var(--accent);border-color:var(--accent)">denied</span> '; const ap=el('<button class="btn sm">Approve</button>'); ap.onclick=async()=>{await db.updateUser(us.id,{status:"active"});toast((us.displayName||us.email)+" approved");viewAccounts(root);}; _sc.appendChild(ap); }
@@ -2008,6 +2077,21 @@ async function viewSettings(root){
       <label style="display:flex;gap:10px;align-items:center;font-size:14px;cursor:pointer"><input type="checkbox" id="autoassign" ${s.autoAssign?"checked":""}/> Enable round-robin auto-assignment to online WFM analysts</label></div>`);
     r.appendChild(aa);
     $("#autoassign",aa).onchange=e=>{ s.autoAssign=e.target.checked; };
+    const esc2=el(`<div class="card" style="max-width:700px;margin-bottom:16px"><div class="code muted" style="margin-bottom:6px">ESCALATION</div>
+      <div class="muted" style="font-size:12px;margin-bottom:12px">Anyone can escalate a ticket manually at any time. Automatic escalation (below) sends tickets past their SLA due date to your <b>WFM Manager</b> (then WFM Director).</div>
+      <label style="display:flex;gap:10px;align-items:center;font-size:14px;cursor:pointer;margin-bottom:8px"><input type="checkbox" id="autoesc" ${s.autoEscalate?"checked":""}/> Enable automatic escalation on SLA breach</label>
+      <div class="field" style="margin-bottom:8px"><label>Automatic escalation goes to team</label><select id="autoescteam" style="max-width:320px"><option value="">— manual only (do not auto-route) —</option>${(s.teams||[]).map(t=>`<option ${t===s.autoEscalateTeam?"selected":""}>${esc(t)}</option>`).join("")}</select></div>
+      <label style="display:flex;gap:10px;align-items:center;font-size:14px;cursor:pointer"><input type="checkbox" id="escbump" ${s.escalateBumpPriority?"checked":""}/> On automatic escalation, also bump priority one level (max Urgent)</label></div>`);
+    r.appendChild(esc2);
+    $("#autoesc",esc2).onchange=e=>{ s.autoEscalate=e.target.checked; };
+    $("#autoescteam",esc2).onchange=e=>{ s.autoEscalateTeam=e.target.value; };
+    $("#escbump",esc2).onchange=e=>{ s.escalateBumpPriority=e.target.checked; };
+    r.appendChild(listEditor("WFM TEAMS",s.teams||[],a=>s.teams=a));
+    const tt=el(`<div class="card" style="max-width:700px;margin:16px 0"><div class="code muted" style="margin-bottom:6px">NEW-TICKET TEAM</div>
+      <div class="muted" style="font-size:12px;margin-bottom:10px">Optionally stamp every new ticket with a team (e.g. the general L1 team that first receives all concerns).</div>
+      <select id="ntteam" style="max-width:320px"><option value="">— none —</option>${(s.teams||[]).map(t=>`<option ${t===s.newTicketTeam?"selected":""}>${esc(t)}</option>`).join("")}</select></div>`);
+    r.appendChild(tt);
+    $("#ntteam",tt).onchange=e=>{ s.newTicketTeam=e.target.value; };
     r.appendChild(listEditor("PRIORITY LEVELS",s.priorities,a=>s.priorities=a)); r.appendChild(listEditor("LABELS",s.labels,a=>s.labels=a));
   }
   function secSLA(r){
