@@ -596,7 +596,7 @@ const DEFAULT_SETTINGS = {
   priorities:["Low","Medium","High","Urgent"],
   labels:["urgent","client-impact","payroll-lock","compliance","after-hours"],
   departments:[...new Set(DEFAULT_MATRIX.map(m=>m.dept))],
-  sla:{Low:72,Medium:48,High:24,Urgent:8}, defaultTheme:"dark", autoAssign:false, autoEscalate:false, escalateBumpPriority:false, teams:["L1 - General","L2 - Forecasting"], newTicketTeam:"", autoEscalateTeam:"", webhookUrl:"", approvalSendUrl:"", approvalDecisionUrl:"", replyFlowUrl:"", intake:{category:"",type:"",priority:"Medium"}
+  sla:{Low:72,Medium:48,High:24,Urgent:8}, defaultTheme:"dark", autoAssign:false, autoEscalate:false, escalateBumpPriority:false, teams:["L1 - General","L2 - Forecasting"], newTicketTeam:"", autoEscalateTeam:"", teamScoped:false, webhookUrl:"", approvalSendUrl:"", approvalDecisionUrl:"", replyFlowUrl:"", intake:{category:"",type:"",priority:"Medium"}
 };
 
 /* ============================ ROUTING / APPROVAL ENGINE (pure) ============================ */
@@ -927,7 +927,14 @@ async function renderShell(){
   mountChat();
 }
 const nameFor=(id)=>{const u=state.users.find(x=>x.id===id);return u?u.displayName:"";};
-function visibleTickets(all,u){ if(u.role==="agent") return all.filter(t=>t.requesterId===u.id); return all; }
+function visibleTickets(all,u){
+  if(u.role==="agent") return all.filter(t=>t.requesterId===u.id);
+  // Team-scoped visibility: a plain WFM analyst sees only their team's tickets (+ ones they raised/own).
+  if(u.role==="wfm" && state.settings && state.settings.teamScoped){
+    return all.filter(t=> (t.team||"")===(u.team||"") || t.requesterId===u.id || t.assigneeId===u.id );
+  }
+  return all;
+}
 
 /* ============================ DASHBOARD ============================ */
 /* ---- presence ---- */
@@ -1062,7 +1069,7 @@ async function applyEscalation(t, byUser, reason, doBump, team){
   const people = targetTeam ? teamMembers(targetTeam) : [];
   t.status="escalated";
   if(doBump) t.priority=bumpPriority(t.priority);
-  t.escalatedAt=now(); t.escalatedTeam=targetTeam;
+  t.escalatedAt=now(); t.escalatedTeam=targetTeam; if(targetTeam) t.team=targetTeam; // move ticket to the target team
   t.activity=[{at:now(), by:(byUser?byUser.id:"system"), byName:(byUser?byUser.displayName:"Auto (SLA)"), text:`Escalated${targetTeam?" to "+targetTeam:""}`+(reason?": "+reason:"")+(doBump?` · priority → ${t.priority}`:"")}, ...(t.activity||[])];
   t.updatedAt=now();
   try{ await db.saveTicket(t); }catch(e){}
@@ -2100,6 +2107,11 @@ async function viewSettings(root){
       <select id="ntteam" style="max-width:320px"><option value="">— none —</option>${(s.teams||[]).map(t=>`<option ${t===s.newTicketTeam?"selected":""}>${esc(t)}</option>`).join("")}</select></div>`);
     r.appendChild(tt);
     $("#ntteam",tt).onchange=e=>{ s.newTicketTeam=e.target.value; };
+    const tsc=el(`<div class="card" style="max-width:700px;margin-bottom:16px"><div class="code muted" style="margin-bottom:6px">TEAM-SCOPED VISIBILITY</div>
+      <div class="muted" style="font-size:12px;margin-bottom:10px">When on, a WFM analyst only sees tickets for <b>their own team</b>. New tickets go to the receiving team; other teams see a ticket only once it's escalated to them. Managers, WFM Managers/Directors and admins always see everything.</div>
+      <label class="switch-row"><span class="switch"><input type="checkbox" id="teamscoped" ${s.teamScoped?"checked":""}/><span class="sl"></span></span><span class="lbl">Restrict WFM analysts to their own team's tickets</span></label></div>`);
+    r.appendChild(tsc);
+    $("#teamscoped",tsc).onchange=e=>{ s.teamScoped=e.target.checked; };
     r.appendChild(listEditor("PRIORITY LEVELS",s.priorities,a=>s.priorities=a)); r.appendChild(listEditor("LABELS",s.labels,a=>s.labels=a));
   }
   function secSLA(r){
