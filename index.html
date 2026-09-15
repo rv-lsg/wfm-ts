@@ -125,7 +125,7 @@
   .b-approved{color:var(--green);border-color:rgba(63,206,139,.45);background:rgba(63,206,139,.06)}
   .b-rejected{color:var(--red);border-color:rgba(226,55,68,.45);background:rgba(226,55,68,.06)}
   .b-cancelled{color:var(--muted);border-color:var(--line)}
-  .prio-High{color:var(--red)} .prio-Urgent{color:#fff;background:var(--red);border-color:var(--red)}
+  .prio-High{color:var(--red)} .prio-Urgent{color:#fff;background:var(--red);border-color:var(--red);font-weight:700}
   .prio-Medium{color:var(--amber)} .prio-Low{color:var(--cyan)}
 
   .pips{display:flex;gap:5px;align-items:center}
@@ -247,7 +247,7 @@
   .searchbar{display:flex;gap:8px;flex:1;max-width:320px}
   .perm-warn{color:var(--amber);font-size:12px;margin-top:6px}
   .matrix-note{font-size:12px;color:var(--muted);margin-top:4px}
-  .badge.prio-Urgent{color:var(--accent);border-color:var(--accent)}
+  .badge.prio-Urgent{color:#fff;background:var(--red);border-color:var(--red)}
 
   /* ---- interactive New Ticket + command palette ---- */
   .req{color:var(--accent)}
@@ -750,7 +750,7 @@ const db={
     const ref=await this._nextRef(); const m=matrixFor(t.category,t.type)||{};
     const doc={ ref, subject:t.subject, description:t.description, category:t.category, type:t.type, priority:t.priority, due:t.due||slaDue(t.priority),
       labels:t.labels||[], requesterId:t.requesterId, requesterName:t.requesterName, requesterEmail:t.requesterEmail||"", site:t.site||"", lob:t.lob||"",
-      department:m.dept||"", assigneeId:"", assigneeName:"",
+      department:m.dept||"", team:t.team||"", assigneeId:"", assigneeName:"",
       status:initialStatus(t.category,t.type), approvals:buildApprovals(t.category,t.type),
       escalation:m.esc||"", resolution:m.res||"", attachments:t.attachments||[], comments:[],
       activity:[{at:now(),by:t.requesterId,byName:t.requesterName,text:"Ticket created"}], createdAt:now(), updatedAt:now() };
