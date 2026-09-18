@@ -166,7 +166,7 @@
   .row-3{display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px}
   .empty{padding:40px;text-align:center;color:var(--muted)}
   .toast{position:fixed;bottom:26px;left:50%;transform:translateX(-50%);background:rgba(14,22,40,.95);border:1px solid var(--accent);color:var(--txt);
-    padding:12px 18px;border-radius:12px;z-index:90;box-shadow:0 8px 34px rgba(0,0,0,.55),0 0 20px rgba(226,55,68,.3);animation:rise .3s}
+    padding:12px 18px;border-radius:12px;z-index:9000;box-shadow:0 8px 34px rgba(0,0,0,.55),0 0 20px rgba(226,55,68,.3);animation:rise .3s}
   .muted{color:var(--muted)}
   .timeline{border-left:2px solid var(--line);margin-left:6px;padding-left:16px}
   .tl-item{margin-bottom:14px;position:relative}
@@ -818,7 +818,7 @@ const fmtSize=(n)=>{if(!n)return "";const u=["B","KB","MB","GB"];let i=0;while(n
 const initials=(n="")=>n.split(/\s+/).slice(0,2).map(w=>w[0]||"").join("").toUpperCase()||"?";
 const ago=(iso)=>{if(!iso)return "";const s=(Date.now()-new Date(iso))/1000;if(s<60)return "now";if(s<3600)return Math.floor(s/60)+"m";if(s<86400)return Math.floor(s/3600)+"h";return Math.floor(s/86400)+"d";};
 const reduceMotion=()=>window.matchMedia("(prefers-reduced-motion:reduce)").matches;
-function toast(m){const r=$("#toast-root");const t=el(`<div class="toast">${esc(m)}</div>`);r.appendChild(t);setTimeout(()=>t.remove(),2600);}
+function toast(m){const r=$("#toast-root");if(r){r.style.position="fixed";r.style.zIndex="9000";}const t=el(`<div class="toast">${esc(m)}</div>`);r.appendChild(t);setTimeout(()=>t.remove(),2600);}
 function applyAccent(){document.documentElement.style.setProperty("--accent",state.settings?.accent||"#E23744");}
 const THEME_KEY="crm_theme";
 const currentTheme=()=>localStorage.getItem(THEME_KEY)||(state.settings&&state.settings.defaultTheme)||"dark";
@@ -868,7 +868,10 @@ function renderAuth(){
     <button class="btn primary" id="go" style="width:100%">Sign in</button>
     ${(!local && ENABLE_MS_LOGIN)?`<div class="auth-or"><span>or</span></div><button class="btn ms-btn" id="ms" style="width:100%"><span class="ms-logo"></span>Sign in with Microsoft</button>`:""}
     ${local?`<div class="seed-note">Local demo mode (this browser only). Add your Firebase config at the top of the file to enable shared, secure sign-in.</div>`:""}`;
-    $("#go",body).onclick=async()=>{const e=$("#e",body).value.trim(),p=$("#p",body).value,m=$("#am",body);if(!e||!p){m.innerHTML=`<div class="msg err">Enter email and password.</div>`;return;}$("#go",body).disabled=true;try{state.user=await db.signIn(e,p);await boot();}catch(x){m.innerHTML=`<div class="msg err">${esc(x.message)}</div>`;$("#go",body).disabled=false;}};
+    const submitIn=async()=>{const e=$("#e",body).value.trim(),p=$("#p",body).value,m=$("#am",body);if(!e||!p){m.innerHTML=`<div class="msg err">Enter email and password.</div>`;return;}$("#go",body).disabled=true;try{state.user=await db.signIn(e,p);await boot();}catch(x){m.innerHTML=`<div class="msg err">${esc(x.message)}</div>`;$("#go",body).disabled=false;}};
+    $("#go",body).onclick=submitIn;
+    const onEnter=(ev)=>{ if(ev.key==="Enter"){ ev.preventDefault(); const e=$("#e",body).value.trim(), p=$("#p",body).value; if(e&&p) submitIn(); } };
+    $("#e",body).addEventListener("keydown",onEnter); $("#p",body).addEventListener("keydown",onEnter);
     $("#p",body).onkeydown=e=>{if(e.key==="Enter")$("#go",body).click();};
     const ms=$("#ms",body); if(ms) ms.onclick=async()=>{const m=$("#am",body);ms.disabled=true;try{state.user=await db.signInMicrosoft();await boot();}catch(x){m.innerHTML=`<div class="msg err">${esc(x.message)}</div>`;ms.disabled=false;}}; };
   const drawUp=()=>{ body.innerHTML=`<div id="am"></div>
@@ -1070,6 +1073,7 @@ async function applyEscalation(t, byUser, reason, doBump, team){
   t.status="escalated";
   if(doBump) t.priority=bumpPriority(t.priority);
   t.escalatedAt=now(); t.escalatedTeam=targetTeam; if(targetTeam) t.team=targetTeam; // move ticket to the target team
+  t.assigneeId=""; t.assigneeName=""; // release ownership so the receiving team can claim it fresh
   t.activity=[{at:now(), by:(byUser?byUser.id:"system"), byName:(byUser?byUser.displayName:"Auto (SLA)"), text:`Escalated${targetTeam?" to "+targetTeam:""}`+(reason?": "+reason:"")+(doBump?` · priority → ${t.priority}`:"")}, ...(t.activity||[])];
   t.updatedAt=now();
   try{ await db.saveTicket(t); }catch(e){}
