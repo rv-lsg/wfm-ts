@@ -1269,7 +1269,6 @@ function barList(box,pairs,onClick){ box.innerHTML=""; pairs=pairs.filter(p=>p.v
   pairs.forEach(p=>{ const row=el(`<div class="bl-row"><span class="bl-l">${esc(p.label)}</span><span class="bl-bar"><i style="width:${Math.round(p.value/max*100)}%;background:${p.color||'var(--cyan)'}"></i></span><span class="bl-v">${p.value}</span></div>`); if(onClick){row.style.cursor="pointer";row.onclick=()=>onClick(p);} box.appendChild(row); }); }
 function kpiNum(box,rows,color){ box.innerHTML=""; const n=el(`<div class="dw-num" style="cursor:pointer;color:${color}" title="Click to view">${rows.length}</div>`); n.onclick=()=>drillModal(rows.length+" tickets",rows); box.appendChild(n); }
 function drillModal(title,rows){ const root=$("#modal-root"); const ov=el(`<div class="overlay"><div class="modal" style="max-width:860px"><div style="display:flex;justify-content:space-between;align-items:center"><h3>${esc(title)}</h3><button class="close-x" id="mx">✕</button></div><div id="db" style="margin-top:10px"></div></div></div>`); root.appendChild(ov); const close=()=>ov.remove(); $("#mx",ov).onclick=close; ov.onclick=e=>{if(e.target===ov)close();};
-  const reopen=async()=>{ close(); try{ await openTicket(t.id, opts); }catch(_){} try{ renderShell(); }catch(_){} }; // reopen the ticket fresh (recomputes buttons), then refresh the list behind it
   const b=$("#db",ov); if(!rows.length)b.innerHTML='<div class="empty">No tickets.</div>'; else b.appendChild(ticketTable(rows)); }
 
 /* ---- widget catalog ---- */
@@ -1800,7 +1799,7 @@ async function openTicket(id, opts){
     const mine = t.assigneeId===u.id;
     const atm=el(`<button class="btn">${mine?"✓ Assigned to you":"Assign to me"}</button>`);
     if(mine) atm.disabled=true;
-    atm.onclick=async()=>{ atm.disabled=true; if(t.assigneeId && t.assigneeId!==u.id){ toast("Already assigned to "+(t.assigneeName||"someone else")+"."); atm.disabled=false; return; } const res=await claimAssignee(t.id, u.id, u.displayName); if(!res.ok){ toast("Could not claim — "+res.name+" got it first."); close(); renderShell(); return; } t.assigneeId=u.id; t.assigneeName=u.displayName; t.activity=[{at:now(),by:u.id,byName:u.displayName,text:"Assigned to "+u.displayName},...(t.activity||[])]; t.updatedAt=now(); try{ await db.saveTicket(t); }catch(e){} toast(`${t.ref} assigned to you`); await reopen(); };
+    atm.onclick=async()=>{ atm.disabled=true; if(t.assigneeId && t.assigneeId!==u.id){ toast("Already assigned to "+(t.assigneeName||"someone else")+"."); atm.disabled=false; return; } const res=await claimAssignee(t.id, u.id, u.displayName); if(!res.ok){ toast("Could not claim — "+res.name+" got it first."); close(); renderShell(); return; } t.assigneeId=u.id; t.assigneeName=u.displayName; t.activity=[{at:now(),by:u.id,byName:u.displayName,text:"Assigned to "+u.displayName},...(t.activity||[])]; t.updatedAt=now(); try{ await db.saveTicket(t); }catch(e){} toast(`${t.ref} assigned to you`); close(); renderShell(); };
     foot.appendChild(atm);
   }
   if(mayApprove){
@@ -1814,7 +1813,7 @@ async function openTicket(id, opts){
   if(canReroute){ const rr=el(`<button class="btn ghost">Reroute</button>`); rr.onclick=()=>rerouteModal(t,close); foot.appendChild(rr); }
   if(trans.length && !wfmLocked){ const sel=el(`<select style="width:auto"><option value="">Set status…</option>${trans.map(s=>`<option value="${s}">${STATUS[s].label}</option>`).join("")}</select>`);
     sel.onchange=async()=>{const ns=sel.value;if(!ns)return;t.status=ns;t.activity.unshift({at:now(),by:u.id,byName:u.displayName,text:"Status → "+STATUS[ns].label});t.updatedAt=now();await db.saveTicket(t);toast(`${t.ref} → ${STATUS[ns].label}`);close();renderShell();}; foot.appendChild(sel); }
-  if(canEdit){ const ed=el(`<button class="btn ghost">Edit</button>`); ed.onclick=()=>editTicketModal(t,reopen); foot.appendChild(ed); }
+  if(canEdit){ const ed=el(`<button class="btn ghost">Edit</button>`); ed.onclick=()=>editTicketModal(t,close); foot.appendChild(ed); }
   const cb=el(`<button class="btn">Close</button>`); cb.onclick=close; foot.appendChild(cb);
 }
 function matrixRowModal(idx,after){
