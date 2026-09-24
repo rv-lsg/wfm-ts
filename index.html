@@ -482,6 +482,7 @@
   [data-theme="light"] .auth-tabs button{background:#fff;color:var(--muted);border-color:var(--line)}
   [data-theme="light"] .auth-tabs button.active{background:#fff;color:var(--txt);border-color:var(--accent)}
   .via-mail{font-size:10px;color:var(--cyan);border:1px solid color-mix(in srgb,var(--cyan) 45%,transparent);padding:1px 7px;border-radius:20px;margin:0 6px;vertical-align:middle}
+  .via-mail.sent{color:var(--green);border-color:color-mix(in srgb,var(--green) 45%,transparent)}
   .cmt-text{white-space:pre-wrap;word-break:break-word}
   .icon-btn.spin{animation:spin360 .5s linear}
   @keyframes spin360{from{transform:rotate(0)}to{transform:rotate(360deg)}}
@@ -1672,7 +1673,7 @@ async function openTicket(id, opts){
     tabc.appendChild(el(`<div class="code muted" style="margin:14px 0 8px">Updates & comments (${(t.comments||[]).length})</div>`));
     const clist=el(`<div></div>`);
     (t.comments||[]).forEach(c=>{
-      const wrap=el(`<div class="cmt"><span class="avatar">${initials(c.byName)}</span><div class="body"><div class="top"><b>${esc(c.byName)}</b>${c.via==="email"?' <span class="via-mail">✉ via email</span>':''}<span>${fmtDate(c.at)}</span></div>${c.text?`<div class="cmt-text">${esc(c.text)}</div>`:'<span class="muted">(no note)</span>'}</div></div>`);
+      const wrap=el(`<div class="cmt"><span class="avatar">${initials(c.byName)}</span><div class="body"><div class="top"><b>${esc(c.byName)}</b>${c.via==="email"?' <span class="via-mail">✉ via email</span>':''}${c.emailed?' <span class="via-mail sent">✉ sent to requester</span>':''}<span>${fmtDate(c.at)}</span></div>${c.text?`<div class="cmt-text">${esc(c.text)}</div>`:'<span class="muted">(no note)</span>'}</div></div>`);
       if(c.attachment){ const a=c.attachment; const chip=el(`<div class="cmt-file"><span class="ext-sm">${esc((a.name.split(".").pop()||"?").toUpperCase().slice(0,4))}</span><span class="fn">${esc(a.name)}</span><small class="muted">${fmtSize(a.size)}</small><button class="btn sm">Open</button></div>`);
         $("button",chip).onclick=async()=>{try{const url=await db.attachmentURL(a);if(url)window.open(url,"_blank");else toast("File unavailable on this device.");}catch(e){toast("Could not open file.");}};
         $(".body",wrap).appendChild(chip); }
