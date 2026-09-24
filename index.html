@@ -639,6 +639,25 @@ function applyApproval(t,user,decision,note){
   else if(t.approvals.every(x=>x.decision==="approved")){ t.status="assigned"; }
   t.updatedAt=now(); return t;
 }
+async function submitApprovalTxn(t,user,decision,note){
+  if(!db.isFirebase()){ const nx=applyApproval({...t,approvals:t.approvals.map(a=>({...a}))},user,decision,note); nx.activity=[{at:now(),by:user.id,byName:user.displayName,text:(decision==="approved"?("Approved ("+(ROLE_LABEL[user.role]||user.role)+")"):"Rejected")+(note?": "+note:"")},...(t.activity||[])]; nx.updatedAt=now(); await db.saveTicket(nx); return {ok:true,status:nx.status,department:nx.department}; }
+  try{
+    return await fb.fsMod.runTransaction(fb.dbf, async(tx)=>{
+      const ref=fb.fsMod.doc(fb.dbf,"tickets",t.id);
+      const s=await tx.get(ref); if(!s.exists()) return {ok:false,reason:"missing"};
+      const cur={id:t.id,...s.data()};
+      if(cur.status!=="pending_approval") return {ok:false,reason:"decided",status:cur.status};
+      let a; if(user.role==="admin") a=cur.approvals.find(x=>x.decision===""); else a=cur.approvals.find(x=>x.decision===""&&x.role===user.role&&(!x.approverId||x.approverId===user.id));
+      if(!a) return {ok:false,reason:"noslot",status:cur.status};
+      a.decision=decision; a.by=user.id; a.byName=user.displayName; a.at=now(); a.note=note||"";
+      if(decision==="rejected") cur.status="rejected"; else if(cur.approvals.every(x=>x.decision==="approved")) cur.status="assigned";
+      cur.activity=[{at:now(),by:user.id,byName:user.displayName,text:(decision==="approved"?("Approved ("+(ROLE_LABEL[user.role]||user.role)+")"):"Rejected")+(note?": "+note:"")},...(cur.activity||[])];
+      cur.updatedAt=now();
+      const {id,...data}=cur; tx.set(ref,data);
+      return {ok:true,status:cur.status,department:cur.department};
+    });
+  }catch(e){ return {ok:false,reason:e.message}; }
+}
 // Status transitions a user may set from the current status.
 function allowedTransitions(user,t){
   if(user.role==="admin") return Object.keys(STATUS).filter(s=>s!==t.status);
@@ -1785,8 +1804,8 @@ async function openTicket(id, opts){
   if(mayApprove){
     const note=el(`<input id="dn" placeholder="Decision note (required to reject)" style="flex:1;min-width:160px"/>`);
     const ap=el(`<button class="btn green">Approve</button>`),rj=el(`<button class="btn danger">Reject</button>`);
-    ap.onclick=async()=>{const nx=applyApproval({...t,approvals:t.approvals.map(a=>({...a}))},u,"approved",note.value.trim());nx.activity=[{at:now(),by:u.id,byName:u.displayName,text:`Approved (${ROLE_LABEL[u.role]})`},...(t.activity||[])];await db.saveTicket(nx);await invalidateOutbox(t.id,u.role);toast(nx.status==="assigned"?`${t.ref} fully approved → routed to ${nx.department}`:`${t.ref} approval recorded`);close();renderShell();};
-    rj.onclick=async()=>{if(!note.value.trim()){toast("A reason is required to reject.");return;}const nx=applyApproval({...t,approvals:t.approvals.map(a=>({...a}))},u,"rejected",note.value.trim());nx.activity=[{at:now(),by:u.id,byName:u.displayName,text:"Rejected"},...(t.activity||[])];await db.saveTicket(nx);await invalidateOutbox(t.id,u.role);toast(`${t.ref} rejected`);close();renderShell();};
+    ap.onclick=async()=>{ ap.disabled=true; const r=await submitApprovalTxn(t,u,"approved",note.value.trim()); if(!r||!r.ok){ toast(r&&r.reason==="decided"?"Already decided; refreshing.":"Could not record approval; refresh and retry."); close(); renderShell(); return; } await invalidateOutbox(t.id,u.role); toast(r.status==="assigned"?`${t.ref} fully approved`:`${t.ref} approval recorded`); close(); renderShell(); };
+    rj.onclick=async()=>{ if(!note.value.trim()){toast("A reason is required to reject.");return;} rj.disabled=true; const r=await submitApprovalTxn(t,u,"rejected",note.value.trim()); if(!r||!r.ok){ toast(r&&r.reason==="decided"?"Already decided; refreshing.":"Could not record rejection; refresh and retry."); close(); renderShell(); return; } await invalidateOutbox(t.id,u.role); toast(`${t.ref} rejected`); close(); renderShell(); };
     foot.appendChild(note);foot.appendChild(rj);foot.appendChild(ap);
   }
   if(canAssign){ const asg=el(`<button class="btn ghost">Assign</button>`); asg.onclick=()=>assignModal(t,close); foot.appendChild(asg); }
